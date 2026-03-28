@@ -1,7 +1,9 @@
 """
 AI Investment News Alert Bot
 Monitors RSS news feeds, analyses relevant headlines with Claude,
-and sends investment alerts to your Telegram.
+and sends two types of alerts to Telegram:
+  1. PORTFOLIO ALERT  — impact on your existing holdings
+  2. OPPORTUNITY ALERT — small/mid cap stocks that could benefit from the event
 
 Usage:
     python bot.py              # Run continuously (every 30 minutes)
@@ -13,7 +15,6 @@ import argparse
 import hashlib
 import json
 import logging
-import os
 import time
 from datetime import datetime
 from pathlib import Path
@@ -53,14 +54,12 @@ def save_seen_cache(seen: set) -> None:
 
 
 def article_id(title: str, link: str) -> str:
-    """Stable unique ID for an article."""
     return hashlib.md5(f"{title}{link}".encode()).hexdigest()
 
 
 # --- News Fetching ---
 
 def fetch_relevant_articles() -> list[dict]:
-    """Fetch articles from all RSS feeds that match trigger keywords."""
     seen = load_seen_cache()
     relevant = []
 
@@ -90,41 +89,64 @@ def fetch_relevant_articles() -> list[dict]:
 
 # --- Claude Analysis ---
 
-def analyse_with_claude(title: str, summary: str) -> str:
-    """Send article to Claude and get portfolio-specific investment advice."""
+def analyse_portfolio_impact(title: str, summary: str) -> str:
+    """How does this news affect existing holdings?"""
     client = anthropic.Anthropic(api_key=config.CLAUDE_API_KEY)
-
-    prompt = f"""
-News Alert: {title}
-
+    message = client.messages.create(
+        model=config.CLAUDE_MODEL,
+        max_tokens=config.MAX_RESPONSE_TOKENS,
+        messages=[{"role": "user", "content": f"""
+News: {title}
 Summary: {summary}
 
 My Portfolio:
 {config.PORTFOLIO}
 
-In exactly 3 bullet points tell me:
-1. IMPACT: How does this specifically affect my portfolio holdings?
-2. ACTION: Should I buy / sell / hold anything right now? Be specific about which holding.
-3. URGENCY: Rate this as HIGH / MEDIUM / LOW and explain why in one sentence.
+In exactly 3 bullet points:
+1. IMPACT: How does this affect my specific holdings?
+2. ACTION: Buy / sell / hold — which holding specifically and why?
+3. URGENCY: HIGH / MEDIUM / LOW and one sentence why.
 
-Be direct and brief. No preamble.
-"""
+Be direct. No preamble.
+"""}],
+    )
+    return message.content[0].text
 
+
+def find_opportunity_plays(title: str, summary: str) -> str:
+    """What small/mid cap stocks could benefit most from this event?"""
+    client = anthropic.Anthropic(api_key=config.CLAUDE_API_KEY)
     message = client.messages.create(
         model=config.CLAUDE_MODEL,
         max_tokens=config.MAX_RESPONSE_TOKENS,
-        messages=[{"role": "user", "content": prompt}],
-    )
+        messages=[{"role": "user", "content": f"""
+This major news just broke:
+{title}
 
+Summary: {summary}
+
+You are a small cap stock analyst. The investor will spend 20 minutes researching
+before deciding whether to invest. Give them the best starting point.
+
+Answer in exactly this format:
+1. EVENT TYPE: What kind of catalyst is this? (geopolitical / IPO / sector boom / macro / other)
+2. TOP 3 PLAYS: Specific stocks or ETFs with ticker symbols that could benefit most.
+   Prioritise small/mid cap with high upside. One sentence per pick explaining why.
+3. WHAT TO RESEARCH: The 2 most important things to check before investing.
+4. RISK: Biggest reason this play could go wrong. One sentence.
+5. WINDOW: How long does this opportunity likely last? (hours / days / weeks)
+
+Be specific with tickers. No preamble.
+"""}],
+    )
     return message.content[0].text
 
 
 def urgency_from_analysis(analysis: str) -> str:
-    """Extract urgency level from Claude's response."""
     lower = analysis.lower()
-    if "urgency: high" in lower or "urgency:** high" in lower or "🔴" in lower:
+    if "urgency: high" in lower or "high" in lower[:200]:
         return "high"
-    if "urgency: medium" in lower or "urgency:** medium" in lower or "🟡" in lower:
+    if "urgency: medium" in lower or "medium" in lower[:200]:
         return "medium"
     return "low"
 
@@ -139,9 +161,8 @@ def urgency_emoji(level: str) -> str:
 # --- Telegram ---
 
 def send_telegram(message: str) -> bool:
-    """Send a message to Telegram. Returns True on success."""
     if not config.TELEGRAM_TOKEN or not config.TELEGRAM_CHAT_ID:
-        log.warning("Telegram not configured — printing alert to console instead.")
+        log.warning("Telegram not configured — printing to console.")
         print("\n" + "=" * 60)
         print(message)
         print("=" * 60 + "\n")
@@ -151,7 +172,7 @@ def send_telegram(message: str) -> bool:
     try:
         resp = requests.post(
             url,
-            json={"chat_id": config.TELEGRAM_CHAT_ID, "text": message, "parse_mode": "HTML"},
+            json={"chat_id": config.TELEGRAM_CHAT_ID, "text": message},
             timeout=10,
         )
         resp.raise_for_status()
@@ -161,15 +182,26 @@ def send_telegram(message: str) -> bool:
         return False
 
 
-def format_alert(title: str, analysis: str, link: str, urgency: str) -> str:
+def format_portfolio_alert(title: str, analysis: str, link: str, urgency: str) -> str:
     emoji = urgency_emoji(urgency)
     timestamp = datetime.now().strftime("%d %b %Y %H:%M")
     return (
-        f"{emoji} <b>INVESTMENT ALERT</b> {emoji}\n"
-        f"<i>{timestamp}</i>\n\n"
-        f"<b>📰 Headline:</b>\n{title}\n\n"
-        f"<b>🤖 AI Analysis:</b>\n{analysis}\n\n"
-        f"<a href='{link}'>Read full article</a>"
+        f"{emoji} PORTFOLIO ALERT {emoji}\n"
+        f"{timestamp}\n\n"
+        f"NEWS: {title}\n\n"
+        f"YOUR HOLDINGS:\n{analysis}\n\n"
+        f"{link}"
+    )
+
+
+def format_opportunity_alert(title: str, analysis: str, link: str) -> str:
+    timestamp = datetime.now().strftime("%d %b %Y %H:%M")
+    return (
+        f"💰 OPPORTUNITY ALERT 💰\n"
+        f"{timestamp}\n\n"
+        f"NEWS: {title}\n\n"
+        f"STOCKS TO RESEARCH:\n{analysis}\n\n"
+        f"{link}"
     )
 
 
@@ -191,23 +223,27 @@ def check_news() -> None:
         log.info(f"Analysing: {title}")
 
         try:
-            analysis = analyse_with_claude(title, article["summary"])
+            # Alert 1 — impact on existing portfolio
+            portfolio_analysis = analyse_portfolio_impact(title, article["summary"])
+            urgency = urgency_from_analysis(portfolio_analysis)
+
+            if URGENCY_RANK[urgency] >= URGENCY_RANK[config.MIN_URGENCY]:
+                alert = format_portfolio_alert(title, portfolio_analysis, article["link"], urgency)
+                send_telegram(alert)
+                log.info(f"Portfolio alert sent [{urgency.upper()}]: {title}")
+
+            time.sleep(1)
+
+            # Alert 2 — opportunity plays for manual research + investing
+            opportunity_analysis = find_opportunity_plays(title, article["summary"])
+            opp_alert = format_opportunity_alert(title, opportunity_analysis, article["link"])
+            send_telegram(opp_alert)
+            log.info(f"Opportunity alert sent: {title}")
+
         except Exception as e:
-            log.error(f"Claude analysis failed for '{title}': {e}")
-            seen.add(article["id"])
-            continue
-
-        urgency = urgency_from_analysis(analysis)
-
-        if URGENCY_RANK[urgency] >= URGENCY_RANK[config.MIN_URGENCY]:
-            alert = format_alert(title, analysis, article["link"], urgency)
-            send_telegram(alert)
-            log.info(f"Alert sent [{urgency.upper()}]: {title}")
-        else:
-            log.info(f"Skipped [{urgency.upper()} < min {config.MIN_URGENCY}]: {title}")
+            log.error(f"Analysis failed for '{title}': {e}")
 
         seen.add(article["id"])
-        # Small delay between API calls to avoid rate limits
         time.sleep(1)
 
     save_seen_cache(seen)
@@ -215,20 +251,21 @@ def check_news() -> None:
 
 
 def run_test() -> None:
-    """Send a test alert to verify Telegram is working."""
     message = (
-        "✅ <b>Investment Bot Connected</b>\n\n"
-        "Your AI investment alert bot is running correctly.\n"
-        "You will receive alerts here when relevant news is detected.\n\n"
-        f"<i>Monitoring {len(config.RSS_FEEDS)} feeds | "
+        "Investment Bot Connected\n\n"
+        "Your AI investment alert bot is running.\n"
+        "For every major news event you will get:\n\n"
+        "1. PORTFOLIO ALERT — impact on your existing holdings\n"
+        "2. OPPORTUNITY ALERT — small cap stocks to research and potentially invest in\n\n"
+        f"Monitoring {len(config.RSS_FEEDS)} feeds | "
         f"{len(config.TRIGGER_KEYWORDS)} keywords | "
-        f"Checking every {config.CHECK_INTERVAL_MINUTES} minutes</i>"
+        f"Checking every {config.CHECK_INTERVAL_MINUTES} minutes"
     )
     success = send_telegram(message)
     if success:
         print("Test alert sent successfully.")
     else:
-        print("Test alert failed. Check your TELEGRAM_TOKEN and TELEGRAM_CHAT_ID in .env")
+        print("Test alert failed. Check your TELEGRAM_TOKEN and TELEGRAM_CHAT_ID.")
 
 
 def main() -> None:
@@ -238,7 +275,7 @@ def main() -> None:
     args = parser.parse_args()
 
     if not config.CLAUDE_API_KEY and not args.test:
-        log.error("CLAUDE_API_KEY is not set. Copy .env.example to .env and add your key.")
+        log.error("CLAUDE_API_KEY is not set in config.py")
         return
 
     if args.test:
@@ -249,14 +286,15 @@ def main() -> None:
         check_news()
         return
 
-    log.info(f"Bot started. Checking news every {config.CHECK_INTERVAL_MINUTES} minutes.")
+    log.info(f"Bot started. Checking every {config.CHECK_INTERVAL_MINUTES} minutes.")
     send_telegram(
-        "🤖 <b>Investment Bot Started</b>\n"
-        f"Monitoring {len(config.RSS_FEEDS)} feeds every {config.CHECK_INTERVAL_MINUTES} minutes."
+        "Investment Bot Started\n"
+        f"Monitoring {len(config.RSS_FEEDS)} feeds every {config.CHECK_INTERVAL_MINUTES} minutes.\n"
+        "You will get PORTFOLIO alerts + OPPORTUNITY alerts for every major event."
     )
 
     schedule.every(config.CHECK_INTERVAL_MINUTES).minutes.do(check_news)
-    check_news()  # Run immediately on start
+    check_news()
 
     while True:
         schedule.run_pending()

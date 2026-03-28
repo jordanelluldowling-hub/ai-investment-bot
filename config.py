@@ -37,32 +37,59 @@ RSS_FEEDS = [
 # --- Keywords That Trigger Analysis ---
 # Any news headline containing one of these will be sent to Claude for analysis
 TRIGGER_KEYWORDS = [
+    # Energy & commodities
     "oil",
     "gold",
-    "Middle East",
     "OPEC",
+    "Strait of Hormuz",
+    "pipeline",
+    "energy crisis",
+    # Geopolitical
+    "Middle East",
     "Israel",
     "Iran",
     "Ukraine",
     "Russia",
+    "conflict",
+    "war",
+    "sanctions",
+    "ceasefire",
+    # Defense
     "defense spending",
     "NATO",
+    "arms",
+    "military contract",
+    "Rheinmetall",
+    # Tech & EV
     "BYD",
     "electric vehicle",
+    "SpaceX",
+    "Elon Musk",
+    "AI chip",
+    "semiconductor",
+    "artificial intelligence boom",
+    # Crypto
     "bitcoin",
     "crypto",
+    "ethereum",
+    # Macro
     "interest rate",
     "Federal Reserve",
     "Fed",
     "inflation",
     "recession",
-    "conflict",
-    "war",
-    "sanctions",
+    "rate cut",
+    "rate hike",
+    # IPO & deals
+    "IPO",
+    "goes public",
+    "merger",
+    "acquisition",
+    "takeover",
+    "billion deal",
+    # Existing holdings
     "Shell",
-    "Rheinmetall",
     "Barrick",
-    "Strait of Hormuz",
 ]
 
 # --- Bot Behaviour ---
