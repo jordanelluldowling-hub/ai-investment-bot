@@ -39,7 +39,6 @@ Monthly budget: €500
 Strategy: Buy dips, hold 5 years, never sell Tier 1
 """
 
-# --- Your current tickers (for direct monitoring) ---
 PORTFOLIO_TICKERS = [
     "Nvidia", "NVDA", "Bitcoin", "BTC",
     "Rheinmetall", "RHM", "Palantir", "PLTR",
@@ -49,32 +48,22 @@ PORTFOLIO_TICKERS = [
     "Archer Aviation", "ACHR", "Recursion", "RXRX",
 ]
 
-# --- Broad opportunity keywords ---
 OPPORTUNITY_KEYWORDS = [
-    # AI & Tech
     "artificial intelligence", "AI boom", "AI chip", "machine learning",
     "semiconductor", "quantum computing", "robotics", "automation",
     "data centre", "OpenAI", "Microsoft", "Google", "Meta", "Apple",
-    # Space & Defense
     "SpaceX", "space race", "NASA", "satellite", "defense spending",
     "NATO", "military contract", "drone", "Lockheed", "arms",
-    # Energy & Commodities
     "oil", "gas", "gold", "silver", "lithium", "uranium", "nuclear",
     "OPEC", "energy crisis", "hydrogen", "solar", "Strait of Hormuz",
-    # Macro
     "interest rate", "Federal Reserve", "Fed", "rate cut", "rate hike",
     "inflation", "recession", "bank collapse", "IMF", "central bank",
-    # Geopolitical
     "Middle East", "Israel", "Iran", "Ukraine", "Russia", "China",
-    "Taiwan", "sanctions", "war", "conflict", "nuclear",
-    # Deals & Markets
+    "Taiwan", "sanctions", "war", "conflict",
     "IPO", "goes public", "merger", "acquisition", "takeover",
     "bankruptcy", "short squeeze", "market crash", "stock surge",
-    # Biotech & Health
     "drug approval", "FDA", "cancer", "vaccine", "biotech", "pandemic",
-    # Crypto
     "bitcoin", "crypto", "ethereum", "ETF approval", "crypto regulation",
-    # Emerging themes
     "flying taxi", "electric vehicle", "BYD", "Tesla",
     "supply chain", "port strike", "food crisis",
 ]
@@ -86,6 +75,24 @@ RSS_FEEDS = [
     "https://feeds.bbci.co.uk/news/business/rss.xml",
     "https://feeds.bbci.co.uk/news/world/rss.xml",
     "https://oilprice.com/rss/main",
+]
+
+# --- Congressional trading feeds ---
+CONGRESS_FEEDS = [
+    "https://housestockwatcher.com/rss",
+    "https://senatestockwatcher.com/rss",
+]
+
+# Politicians known for strong trading records
+WATCH_POLITICIANS = [
+    "pelosi", "paul pelosi",
+    "tuberville",
+    "crenshaw",
+    "collins",
+    "loeffler",
+    "burr",
+    "greene",
+    "ocasio",
 ]
 
 CACHE_FILE = Path("seen.json")
@@ -124,11 +131,6 @@ def ask_claude(prompt):
     return msg.content[0].text
 
 
-def is_portfolio_stock(title, summary):
-    text = (title + " " + summary).lower()
-    return any(ticker.lower() in text for ticker in PORTFOLIO_TICKERS)
-
-
 def analyse_portfolio_impact(title, summary):
     return ask_claude(f"""News: {title}
 Summary: {summary}
@@ -152,39 +154,112 @@ My existing portfolio:
 {PORTFOLIO}
 
 You are an elite small/mid cap stock analyst hunting for the next Nvidia-style opportunity.
-The investor has a 5 year horizon and will buy dips aggressively.
+The investor has a 5 year horizon and buys dips aggressively.
 
-Answer in exactly this format:
 1. EVENT TYPE: What kind of catalyst is this?
 2. TOP 3 PLAYS: Specific stocks NOT already in my portfolio with ticker symbols.
-   Focus on small/mid cap with 5x+ potential. One sentence per pick explaining why.
-3. FITS MY PORTFOLIO: Does this strengthen any of my existing positions? Which ones?
-4. WHAT TO RESEARCH: 2 most important things to check before investing.
+   Focus on small/mid cap with 5x+ potential. One sentence per pick.
+3. FITS MY PORTFOLIO: Does this strengthen any existing positions?
+4. WHAT TO RESEARCH: 2 most important things to check first.
 5. RISK: Biggest reason these plays could go wrong.
 6. WINDOW: How long does this opportunity last? (hours/days/weeks/months)
 
-Be specific with tickers. Prioritise undiscovered gems over well-known stocks. No preamble.""")
+Be specific with tickers. Prioritise undiscovered gems. No preamble.""")
+
+
+def analyse_congress_trade(politician, ticker, trade_type, amount, summary):
+    return ask_claude(f"""A US politician just filed a stock trade:
+
+Politician: {politician}
+Stock: {ticker}
+Trade type: {trade_type}
+Amount: {amount}
+Details: {summary}
+
+My Portfolio:
+{PORTFOLIO}
+
+Analyse this congressional trade:
+1. WHY SIGNIFICANT: Why would this politician buy/sell this now? What do they likely know?
+2. SHOULD I FOLLOW: Should I copy this trade? Yes/No and why.
+3. CONNECTION: Does this relate to any of my existing holdings?
+4. NEW OPPORTUNITY: If I don't own this stock, is it worth buying? Give ticker and reason.
+5. URGENCY: HIGH / MEDIUM / LOW — how fast should I act if following this trade?
+
+Remember: Politicians file trades up to 45 days late — factor in the delay.
+Be direct. No preamble.""")
 
 
 def weekly_new_stock_suggestions():
-    """Every week suggest 3 new stocks to consider adding to the portfolio."""
     return ask_claude(f"""My current investment portfolio:
 {PORTFOLIO}
 
-I am a Gen Z investor with a 5 year horizon, €500/month to invest.
+I am a Gen Z investor, 5 year horizon, €500/month.
 I want stocks that could do what Nvidia did — early stage, undervalued, huge potential.
 
-Suggest 3 NEW stocks I don't already own that I should research this week.
-For each stock:
+Suggest 3 NEW stocks I don't already own to research this week.
+For each:
 1. Name and ticker
 2. What they do in 2 sentences
 3. Why they could 5-10x in 5 years
-4. Current market cap (small/mid/large)
+4. Current size (small/mid/large cap)
 5. Biggest risk
-6. How it fits alongside my existing portfolio
+6. How it fits my existing portfolio
 
 Focus on: AI, space, defense tech, biotech, quantum, robotics, emerging markets.
 Prioritise undiscovered gems. No preamble.""")
+
+
+def check_congress_trades():
+    """Monitor congressional stock filings and alert on significant trades."""
+    print(f"Checking congressional trades... {datetime.now().strftime('%H:%M')}")
+    seen = load_seen()
+    found = 0
+
+    for feed_url in CONGRESS_FEEDS:
+        try:
+            feed = feedparser.parse(feed_url)
+            for entry in feed.entries[:20]:
+                title = entry.get("title", "")
+                summary = entry.get("summary", entry.get("description", ""))
+                aid = "congress_" + hashlib.md5(title.encode()).hexdigest()
+
+                if aid in seen:
+                    continue
+
+                text = (title + " " + summary).lower()
+
+                # Check if it's a watched politician or a stock we own
+                is_watched_politician = any(p in text for p in WATCH_POLITICIANS)
+                is_our_stock = any(t.lower() in text for t in PORTFOLIO_TICKERS)
+
+                if is_watched_politician or is_our_stock:
+                    print(f"Congress trade found: {title}")
+                    found += 1
+
+                    # Extract trade details from title/summary
+                    analysis = analyse_congress_trade(
+                        politician=title.split(" purchased ")[0].split(" sold ")[0] if " purchased " in title or " sold " in title else "Unknown politician",
+                        ticker=title,
+                        trade_type="Purchase" if "purchase" in text or "bought" in text else "Sale",
+                        amount=summary[:100],
+                        summary=summary
+                    )
+
+                    send_telegram(
+                        f"CONGRESSIONAL TRADE ALERT\n\n"
+                        f"{title}\n\n"
+                        f"{analysis}"
+                    )
+
+                    seen.add(aid)
+                    time.sleep(1)
+
+        except Exception as e:
+            print(f"Congress feed error {feed_url}: {e}")
+
+    save_seen(seen)
+    print(f"Congress check done. Found {found} relevant trades.")
 
 
 def check_news():
@@ -216,7 +291,6 @@ def check_news():
                     print(f"Found: {title}")
                     found += 1
 
-                    # Alert 1 — portfolio impact
                     portfolio_advice = analyse_portfolio_impact(title, summary)
                     send_telegram(
                         f"PORTFOLIO ALERT\n\n"
@@ -225,7 +299,6 @@ def check_news():
                     )
                     time.sleep(1)
 
-                    # Alert 2 — new opportunity plays
                     opportunity = find_opportunity_plays(title, summary)
                     send_telegram(
                         f"OPPORTUNITY ALERT\n\n"
@@ -244,8 +317,7 @@ def check_news():
 
 
 def weekly_suggestions():
-    """Send weekly new stock suggestions every Monday."""
-    if datetime.now().weekday() == 0:  # Monday
+    if datetime.now().weekday() == 0:
         print("Sending weekly stock suggestions...")
         suggestions = weekly_new_stock_suggestions()
         send_telegram(
@@ -260,6 +332,7 @@ import argparse
 parser = argparse.ArgumentParser()
 parser.add_argument("--once", action="store_true")
 parser.add_argument("--weekly", action="store_true")
+parser.add_argument("--congress", action="store_true")
 args = parser.parse_args()
 
 if args.weekly:
@@ -270,12 +343,17 @@ if args.weekly:
         f"3 new stocks to research this week:\n\n"
         f"{suggestions}"
     )
+elif args.congress:
+    check_congress_trades()
 elif args.once:
     check_news()
+    check_congress_trades()
 else:
     schedule.every(30).minutes.do(check_news)
+    schedule.every(1).hours.do(check_congress_trades)
     schedule.every().monday.at("08:00").do(weekly_suggestions)
     check_news()
+    check_congress_trades()
     while True:
         schedule.run_pending()
         time.sleep(30)
