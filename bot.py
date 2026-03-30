@@ -34,6 +34,7 @@ TIER 3 - MOONSHOTS:
 - Archer Aviation (ACHR) - Flying taxis
 - Oddity Tech (ODD) - AI beauty tech
 - Rigetti Computing (RGTI) - Quantum computing
+- Ondas Holdings (ONDS) - AI drones for railways and defense
 
 WILDCARD:
 - CoreWeave (CRWV) - Nvidia backed AI cloud
@@ -49,7 +50,7 @@ PORTFOLIO_TICKERS = [
     "Cloudflare", "NET", "Tempus AI", "TEM",
     "SoundHound", "SOUN", "Archer Aviation", "ACHR",
     "Oddity Tech", "ODD", "Rigetti", "RGTI",
-    "CoreWeave", "CRWV",
+    "Ondas", "ONDS", "CoreWeave", "CRWV",
 ]
 
 OPPORTUNITY_KEYWORDS = [
@@ -71,6 +72,7 @@ OPPORTUNITY_KEYWORDS = [
     "flying taxi", "electric vehicle", "BYD", "Tesla",
     "supply chain", "port strike", "food crisis",
     "beauty tech", "cloud computing", "AI cloud",
+    "railway", "railroad", "rail drone",
 ]
 
 ALL_KEYWORDS = list(set(PORTFOLIO_TICKERS + OPPORTUNITY_KEYWORDS))
