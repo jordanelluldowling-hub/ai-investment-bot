@@ -26,14 +26,17 @@ TIER 2 - HIGH CONVICTION:
 - Palantir (PLTR) - AI + government
 - IonQ (IONQ) - Quantum computing
 - Rocket Lab (RKLB) - Space
-- Tempus AI (TEM) - AI healthcare
 - Cloudflare (NET) - Cybersecurity
+- Tempus AI (TEM) - AI healthcare
 
 TIER 3 - MOONSHOTS:
 - SoundHound AI (SOUN) - Voice AI
-- Serve Robotics (SERV) - Delivery robots
 - Archer Aviation (ACHR) - Flying taxis
-- Recursion Pharma (RXRX) - AI drug discovery
+- Oddity Tech (ODD) - AI beauty tech
+- Rigetti Computing (RGTI) - Quantum computing
+
+WILDCARD:
+- CoreWeave (CRWV) - Nvidia backed AI cloud
 
 Monthly budget: €500
 Strategy: Buy dips, hold 5 years, never sell Tier 1
@@ -43,9 +46,10 @@ PORTFOLIO_TICKERS = [
     "Nvidia", "NVDA", "Bitcoin", "BTC",
     "Rheinmetall", "RHM", "Palantir", "PLTR",
     "IonQ", "IONQ", "Rocket Lab", "RKLB",
-    "Tempus AI", "TEM", "Cloudflare", "NET",
-    "SoundHound", "SOUN", "Serve Robotics", "SERV",
-    "Archer Aviation", "ACHR", "Recursion", "RXRX",
+    "Cloudflare", "NET", "Tempus AI", "TEM",
+    "SoundHound", "SOUN", "Archer Aviation", "ACHR",
+    "Oddity Tech", "ODD", "Rigetti", "RGTI",
+    "CoreWeave", "CRWV",
 ]
 
 OPPORTUNITY_KEYWORDS = [
@@ -66,6 +70,7 @@ OPPORTUNITY_KEYWORDS = [
     "bitcoin", "crypto", "ethereum", "ETF approval", "crypto regulation",
     "flying taxi", "electric vehicle", "BYD", "Tesla",
     "supply chain", "port strike", "food crisis",
+    "beauty tech", "cloud computing", "AI cloud",
 ]
 
 ALL_KEYWORDS = list(set(PORTFOLIO_TICKERS + OPPORTUNITY_KEYWORDS))
@@ -77,22 +82,16 @@ RSS_FEEDS = [
     "https://oilprice.com/rss/main",
 ]
 
-# --- Congressional trading feeds ---
 CONGRESS_FEEDS = [
     "https://housestockwatcher.com/rss",
     "https://senatestockwatcher.com/rss",
 ]
 
-# Politicians known for strong trading records
 WATCH_POLITICIANS = [
     "pelosi", "paul pelosi",
-    "tuberville",
-    "crenshaw",
-    "collins",
-    "loeffler",
-    "burr",
-    "greene",
-    "ocasio",
+    "tuberville", "crenshaw",
+    "collins", "loeffler",
+    "burr", "greene",
 ]
 
 CACHE_FILE = Path("seen.json")
@@ -140,7 +139,7 @@ My Portfolio:
 
 In exactly 3 bullet points:
 1. IMPACT: Which of my specific holdings does this affect and how?
-2. ACTION: Buy more / hold / trim — which holding and why?
+2. ACTION: Buy more / hold / trim - which holding and why?
 3. URGENCY: HIGH / MEDIUM / LOW and one sentence why.
 
 Be direct. No preamble.""")
@@ -179,14 +178,13 @@ Details: {summary}
 My Portfolio:
 {PORTFOLIO}
 
-Analyse this congressional trade:
 1. WHY SIGNIFICANT: Why would this politician buy/sell this now? What do they likely know?
 2. SHOULD I FOLLOW: Should I copy this trade? Yes/No and why.
 3. CONNECTION: Does this relate to any of my existing holdings?
 4. NEW OPPORTUNITY: If I don't own this stock, is it worth buying? Give ticker and reason.
-5. URGENCY: HIGH / MEDIUM / LOW — how fast should I act if following this trade?
+5. URGENCY: HIGH / MEDIUM / LOW - how fast should I act?
 
-Remember: Politicians file trades up to 45 days late — factor in the delay.
+Remember: Politicians file trades up to 45 days late - factor in the delay.
 Be direct. No preamble.""")
 
 
@@ -194,8 +192,8 @@ def weekly_new_stock_suggestions():
     return ask_claude(f"""My current investment portfolio:
 {PORTFOLIO}
 
-I am a Gen Z investor, 5 year horizon, €500/month.
-I want stocks that could do what Nvidia did — early stage, undervalued, huge potential.
+I am a Gen Z investor, 5 year horizon, 500 euros/month.
+I want stocks that could do what Nvidia did - early stage, undervalued, huge potential.
 
 Suggest 3 NEW stocks I don't already own to research this week.
 For each:
@@ -211,7 +209,6 @@ Prioritise undiscovered gems. No preamble.""")
 
 
 def check_congress_trades():
-    """Monitor congressional stock filings and alert on significant trades."""
     print(f"Checking congressional trades... {datetime.now().strftime('%H:%M')}")
     seen = load_seen()
     found = 0
@@ -228,8 +225,6 @@ def check_congress_trades():
                     continue
 
                 text = (title + " " + summary).lower()
-
-                # Check if it's a watched politician or a stock we own
                 is_watched_politician = any(p in text for p in WATCH_POLITICIANS)
                 is_our_stock = any(t.lower() in text for t in PORTFOLIO_TICKERS)
 
@@ -237,9 +232,8 @@ def check_congress_trades():
                     print(f"Congress trade found: {title}")
                     found += 1
 
-                    # Extract trade details from title/summary
                     analysis = analyse_congress_trade(
-                        politician=title.split(" purchased ")[0].split(" sold ")[0] if " purchased " in title or " sold " in title else "Unknown politician",
+                        politician=title,
                         ticker=title,
                         trade_type="Purchase" if "purchase" in text or "bought" in text else "Sale",
                         amount=summary[:100],
