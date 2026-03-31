@@ -18,28 +18,30 @@ TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
 # --- Your Portfolio ---
 PORTFOLIO = """
 TIER 1 - CORE (never sell):
-- Nvidia (NVDA) - AI infrastructure
-- Bitcoin (BTC) - Crypto
-- Rheinmetall (RHM) - Defense
+- Nvidia (NVDA) $50 - AI infrastructure
+- Bitcoin (BTC) $50 - Crypto
+- Rheinmetall (RHM) $50 - Defense
 
 TIER 2 - HIGH CONVICTION:
-- Palantir (PLTR) - AI + government
-- IonQ (IONQ) - Quantum computing
-- Rocket Lab (RKLB) - Space
-- Cloudflare (NET) - Cybersecurity
-- Tempus AI (TEM) - AI healthcare
+- Palantir (PLTR) $40 - AI + government
+- IonQ (IONQ) $35 - Quantum computing
+- Rocket Lab (RKLB) $35 - Space
+- Axon Enterprise (AXON) $35 - AI law enforcement
+- BigBear.ai (BBAI) $30 - Defense AI analytics
 
 TIER 3 - MOONSHOTS:
-- SoundHound AI (SOUN) - Voice AI
-- Archer Aviation (ACHR) - Flying taxis
-- Oddity Tech (ODD) - AI beauty tech
-- Rigetti Computing (RGTI) - Quantum computing
-- Ondas Holdings (ONDS) - AI drones for railways and defense
+- BTQ Technologies (BTQ) $25 - Quantum cybersecurity
+- Richtech Robotics (RR) $25 - Restaurant/hotel AI robots
+- Ondas Holdings (ONDS) $20 - AI drones for railways and defense
+- Cellebrite (CLBT) $20 - Intelligence agency phone extraction
+- IREN (IREN) $20 - AI data centres + Bitcoin mining
+- Solana (SOL) $10 - Crypto
+- Injective (INJ) $5 - Decentralised exchange crypto
 
 WILDCARD:
-- CoreWeave (CRWV) - Nvidia backed AI cloud
+- CoreWeave (CRWV) $50 - Nvidia backed AI cloud
 
-Monthly budget: €500
+Monthly budget: 500 euros
 Strategy: Buy dips, hold 5 years, never sell Tier 1
 """
 
@@ -47,10 +49,12 @@ PORTFOLIO_TICKERS = [
     "Nvidia", "NVDA", "Bitcoin", "BTC",
     "Rheinmetall", "RHM", "Palantir", "PLTR",
     "IonQ", "IONQ", "Rocket Lab", "RKLB",
-    "Cloudflare", "NET", "Tempus AI", "TEM",
-    "SoundHound", "SOUN", "Archer Aviation", "ACHR",
-    "Oddity Tech", "ODD", "Rigetti", "RGTI",
-    "Ondas", "ONDS", "CoreWeave", "CRWV",
+    "Axon", "AXON", "BigBear", "BBAI",
+    "BTQ Technologies", "BTQ",
+    "Richtech Robotics", "RR",
+    "Ondas", "ONDS", "Cellebrite", "CLBT",
+    "IREN", "Solana", "SOL",
+    "Injective", "INJ", "CoreWeave", "CRWV",
 ]
 
 OPPORTUNITY_KEYWORDS = [
@@ -71,8 +75,13 @@ OPPORTUNITY_KEYWORDS = [
     "bitcoin", "crypto", "ethereum", "ETF approval", "crypto regulation",
     "flying taxi", "electric vehicle", "BYD", "Tesla",
     "supply chain", "port strike", "food crisis",
-    "beauty tech", "cloud computing", "AI cloud",
-    "railway", "railroad", "rail drone",
+    "cloud computing", "AI cloud", "railway", "railroad",
+    "police", "law enforcement", "body camera", "taser",
+    "intelligence agency", "FBI", "CIA", "phone extraction",
+    "restaurant robot", "hotel robot", "service robot",
+    "quantum security", "quantum encryption", "post quantum",
+    "bitcoin mining", "crypto mining", "AI data centre",
+    "decentralised exchange", "DeFi",
 ]
 
 ALL_KEYWORDS = list(set(PORTFOLIO_TICKERS + OPPORTUNITY_KEYWORDS))
@@ -155,17 +164,18 @@ My existing portfolio:
 {PORTFOLIO}
 
 You are an elite small/mid cap stock analyst hunting for the next Nvidia-style opportunity.
-The investor has a 5 year horizon and buys dips aggressively.
+The investor has a 5 year horizon, buys dips aggressively, wants 10x+ returns.
+They love under the radar companies that dominate a niche like DJI dominates drones.
 
 1. EVENT TYPE: What kind of catalyst is this?
 2. TOP 3 PLAYS: Specific stocks NOT already in my portfolio with ticker symbols.
-   Focus on small/mid cap with 5x+ potential. One sentence per pick.
+   Focus on small/mid cap niche dominators with 10x potential. One sentence per pick.
 3. FITS MY PORTFOLIO: Does this strengthen any existing positions?
 4. WHAT TO RESEARCH: 2 most important things to check first.
 5. RISK: Biggest reason these plays could go wrong.
 6. WINDOW: How long does this opportunity last? (hours/days/weeks/months)
 
-Be specific with tickers. Prioritise undiscovered gems. No preamble.""")
+Be specific with tickers. Prioritise undiscovered niche dominators. No preamble.""")
 
 
 def analyse_congress_trade(politician, ticker, trade_type, amount, summary):
@@ -195,19 +205,21 @@ def weekly_new_stock_suggestions():
 {PORTFOLIO}
 
 I am a Gen Z investor, 5 year horizon, 500 euros/month.
-I want stocks that could do what Nvidia did - early stage, undervalued, huge potential.
+I want stocks like the next Nvidia or BYD - companies that dominate a niche completely
+then expand globally. Early stage, undervalued, 10x+ potential.
 
 Suggest 3 NEW stocks I don't already own to research this week.
 For each:
 1. Name and ticker
 2. What they do in 2 sentences
-3. Why they could 5-10x in 5 years
+3. Why they could 10x in 5 years
 4. Current size (small/mid/large cap)
 5. Biggest risk
 6. How it fits my existing portfolio
 
-Focus on: AI, space, defense tech, biotech, quantum, robotics, emerging markets.
-Prioritise undiscovered gems. No preamble.""")
+Focus on: niche dominators, AI, space, defense tech, biotech, quantum, robotics,
+emerging market disruptors, companies big at home about to go global.
+Prioritise undiscovered gems nobody is talking about. No preamble.""")
 
 
 def check_congress_trades():
