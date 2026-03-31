@@ -10,12 +10,10 @@ import feedparser
 import requests
 import schedule
 
-# --- Keys from environment ---
 CLAUDE_API_KEY = os.environ.get("CLAUDE_API_KEY", "")
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN", "")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
 
-# --- Your Portfolio ---
 PORTFOLIO = """
 TIER 1 - CORE (never sell):
 - Nvidia (NVDA) $50 - AI infrastructure
@@ -98,19 +96,29 @@ CONGRESS_FEEDS = [
     "https://senatestockwatcher.com/rss",
 ]
 
-# Expanded list of politicians worth tracking
+# Politicians AND their known spouses/relatives who trade on their behalf
 WATCH_POLITICIANS = [
-    # Most watched - proven track records
+    # --- Pelosi family ---
     "pelosi", "paul pelosi",
-    "tuberville", "crenshaw",
-    "collins", "loeffler",
-    "burr", "greene",
+    # --- Tuberville ---
+    "tuberville",
+    # --- Crenshaw ---
+    "crenshaw",
+    # --- Collins ---
+    "collins",
+    # --- Loeffler / Sprecher ---
+    "loeffler", "jeff sprecher",           # husband of Kelly Loeffler, ICE Exchange CEO
+    # --- Burr ---
+    "burr",
+    # --- Greene ---
+    "greene",
+    # --- Ocasio ---
     "ocasio",
-    # Senate heavy traders
+    # --- Senate traders ---
     "ossoff", "warnock", "kelly",
     "manchin", "capito", "inhofe",
     "lankford", "scott", "rubio", "warren",
-    # House heavy traders
+    # --- House traders ---
     "mccaul", "gottheimer", "suozzi",
     "tenney", "self", "moore", "clyde",
     "lucas", "pfluger", "van duyne",
@@ -119,6 +127,12 @@ WATCH_POLITICIANS = [
     "austin scott", "perry", "fitzgerald",
     "joyce", "johnson", "weber", "babin",
     "carter", "olson", "brady", "cloud",
+    # --- Known active spouses/dependents ---
+    "louise",          # Louise Mccaul - wife of Michael McCaul
+    "julia staley",    # wife of Rep. Jake Ellzey
+    "kathryn",         # Kathryn Tuberville
+    "stacey",          # Stacey Scott
+    "spouse", "dependent", "joint",   # catch all filer types
 ]
 
 CACHE_FILE = Path("seen.json")
@@ -196,25 +210,28 @@ Only suggest plays you are genuinely excited about - no filler picks.
 4. WHAT TO RESEARCH: 2 most important things to check first.
 5. RISK: Biggest reason these plays could go wrong.
 6. WINDOW: How long does this opportunity last? (hours/days/weeks/months)
-7. CONFIDENCE: HIGH / MEDIUM / LOW - how confident are you in these plays?
+7. CONFIDENCE: HIGH / MEDIUM / LOW
 
-Be specific with tickers. Only send if CONFIDENCE is HIGH or MEDIUM. No preamble.""")
+Be specific with tickers. Only include HIGH or MEDIUM confidence plays. No preamble.""")
 
 
 def score_congress_trade(title, summary):
-    return ask_claude(f"""A US politician filed this stock trade:
+    return ask_claude(f"""A US politician or their spouse/relative filed this stock trade:
 {title}
 {summary}
 
 Score this trade from 1-10 for how significant it is as an investment signal.
-10 = Pelosi buying a massive position in a sector days before a government contract
+10 = Pelosi's husband buying millions in a sector days before a government contract
+5 = A senator buying a small position in a well known stock
 1 = A senator selling $1000 of a random stock
+
+Extra weight if: large amount, spouse/dependent filing, committee member trading in their sector.
 
 Respond with ONLY a number from 1-10. Nothing else.""")
 
 
 def analyse_congress_trade(title, summary):
-    return ask_claude(f"""A US politician just filed a significant stock trade:
+    return ask_claude(f"""A US politician or their spouse just filed a significant stock trade:
 
 {title}
 {summary}
@@ -222,13 +239,14 @@ def analyse_congress_trade(title, summary):
 My Portfolio:
 {PORTFOLIO}
 
-1. WHY SIGNIFICANT: Why would this politician buy/sell this now? What do they likely know?
-2. SHOULD I FOLLOW: Should I copy this trade? Yes/No and why.
-3. CONNECTION: Does this relate to any of my existing holdings?
-4. NEW OPPORTUNITY: If I don't own this stock, is it worth buying? Ticker and reason.
-5. URGENCY: HIGH / MEDIUM / LOW - how fast should I act?
+1. WHO FILED: Is this the politician directly or their spouse/dependent? Why does that matter?
+2. WHY SIGNIFICANT: What do they likely know? Which committee are they on?
+3. SHOULD I FOLLOW: Yes/No and exactly how much to invest if yes.
+4. CONNECTION: Does this relate to any of my existing holdings?
+5. NEW OPPORTUNITY: If I don't own this stock, should I buy it? Ticker and reason.
+6. URGENCY: HIGH / MEDIUM / LOW - how fast should I act?
 
-Note: Politicians file trades up to 45 days late - factor in the delay.
+Note: Politicians file up to 45 days late - factor in the delay.
 Be direct. No preamble.""")
 
 
@@ -236,23 +254,22 @@ def daily_congress_summary(trades):
     if not trades:
         return None
     trades_text = "\n".join([f"- {t}" for t in trades[:20]])
-    return ask_claude(f"""Here are today's congressional stock trade filings:
+    return ask_claude(f"""Here are today's congressional stock trade filings (including spouses and dependents):
 
 {trades_text}
 
 My Portfolio:
 {PORTFOLIO}
 
-Give me today's strongest congressional trading signals only.
-Ignore small, routine or irrelevant trades.
+Give me today's strongest signals only. Ignore small or routine trades.
 
-1. TOP 3 STRONGEST SIGNALS TODAY: Only the most significant trades worth acting on.
-   For each: Politician, ticker, buy/sell, amount, why it matters.
-2. FOLLOW ANY: Which specifically should I copy and how much to invest?
+1. TOP 3 STRONGEST SIGNALS TODAY:
+   For each: Who filed (politician or spouse?), ticker, buy/sell, amount, why it matters.
+2. FOLLOW ANY: Which specifically should I copy and how much?
 3. PATTERN: Any clear theme across today's trades?
-4. VERDICT: Is today's congressional activity bullish or bearish overall?
+4. VERDICT: Bullish or bearish signal overall from congress today?
 
-If there are no strong signals today just say: NO STRONG SIGNALS TODAY.
+If no strong signals: just say NO STRONG SIGNALS TODAY.
 Be direct. No filler. No preamble.""")
 
 
@@ -261,11 +278,10 @@ def weekly_new_stock_suggestions():
 {PORTFOLIO}
 
 I am a Gen Z investor, 5 year horizon, 500 euros/month.
-I want stocks like the next Nvidia or BYD - companies that dominate a niche completely
-then expand globally. Early stage, undervalued, 10x+ potential.
+I want stocks like the next Nvidia or BYD - dominate a niche, expand globally, 10x+ potential.
 
 Suggest 3 NEW stocks I don't already own to research this week.
-Only suggest ones you are genuinely excited about.
+Only ones you are genuinely excited about.
 For each:
 1. Name and ticker
 2. What they do in 2 sentences
@@ -273,9 +289,8 @@ For each:
 4. Current size (small/mid/large cap)
 5. Biggest risk
 6. How it fits my existing portfolio
-7. Conviction level: HIGH / MEDIUM
+7. Conviction: HIGH / MEDIUM only
 
-Only include HIGH or MEDIUM conviction picks.
 Focus on: niche dominators, AI, space, defense tech, biotech, quantum, robotics,
 emerging market disruptors, companies big at home about to go global.
 No preamble.""")
@@ -300,17 +315,17 @@ def check_congress_trades():
                     continue
 
                 text = (title + " " + summary).lower()
-                is_watched_politician = any(p in text for p in WATCH_POLITICIANS)
+                is_watched = any(p in text for p in WATCH_POLITICIANS)
                 is_our_stock = any(t.lower() in text for t in PORTFOLIO_TICKERS)
 
-                if is_watched_politician or is_our_stock:
+                if is_watched or is_our_stock:
                     try:
                         score_text = score_congress_trade(title, summary)
                         score = int(''.join(filter(str.isdigit, score_text[:5])))
                     except:
                         score = 5
 
-                    print(f"Congress trade score {score}/10: {title}")
+                    print(f"Score {score}/10: {title}")
 
                     if score >= 7:
                         found += 1
