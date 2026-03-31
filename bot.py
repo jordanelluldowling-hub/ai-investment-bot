@@ -141,6 +141,11 @@ def ask_claude(prompt):
     return msg.content[0].text
 
 
+def is_high_urgency(text):
+    """Only return True if Claude rated this as HIGH urgency."""
+    return "urgency: high" in text.lower() or "high" in text.lower()[:300]
+
+
 def analyse_portfolio_impact(title, summary):
     return ask_claude(f"""News: {title}
 Summary: {summary}
@@ -153,6 +158,7 @@ In exactly 3 bullet points:
 2. ACTION: Buy more / hold / trim - which holding and why?
 3. URGENCY: HIGH / MEDIUM / LOW and one sentence why.
 
+Only rate as HIGH if this could move my portfolio by 5%+ within 48 hours.
 Be direct. No preamble.""")
 
 
@@ -166,6 +172,7 @@ My existing portfolio:
 You are an elite small/mid cap stock analyst hunting for the next Nvidia-style opportunity.
 The investor has a 5 year horizon, buys dips aggressively, wants 10x+ returns.
 They love under the radar companies that dominate a niche like DJI dominates drones.
+Only suggest plays you are genuinely excited about - no filler picks.
 
 1. EVENT TYPE: What kind of catalyst is this?
 2. TOP 3 PLAYS: Specific stocks NOT already in my portfolio with ticker symbols.
@@ -174,12 +181,26 @@ They love under the radar companies that dominate a niche like DJI dominates dro
 4. WHAT TO RESEARCH: 2 most important things to check first.
 5. RISK: Biggest reason these plays could go wrong.
 6. WINDOW: How long does this opportunity last? (hours/days/weeks/months)
+7. CONFIDENCE: HIGH / MEDIUM / LOW - how confident are you in these plays?
 
-Be specific with tickers. Prioritise undiscovered niche dominators. No preamble.""")
+Be specific with tickers. Only send if CONFIDENCE is HIGH or MEDIUM. No preamble.""")
+
+
+def score_congress_trade(title, summary):
+    """Ask Claude to score a trade 1-10. Only alert if score >= 7."""
+    return ask_claude(f"""A US politician filed this stock trade:
+{title}
+{summary}
+
+Score this trade from 1-10 for how significant it is as an investment signal.
+10 = Pelosi buying a massive position in a sector days before a government contract
+1 = A senator selling $1000 of a random stock
+
+Respond with ONLY a number from 1-10. Nothing else.""")
 
 
 def analyse_congress_trade(title, summary):
-    return ask_claude(f"""A US politician just filed a stock trade:
+    return ask_claude(f"""A US politician just filed a significant stock trade:
 
 {title}
 {summary}
@@ -198,7 +219,7 @@ Be direct. No preamble.""")
 
 
 def daily_congress_summary(trades):
-    """Ask Claude to summarise the top 5 congressional trades of the day."""
+    """Summarise only the strongest congressional trades of the day."""
     if not trades:
         return None
     trades_text = "\n".join([f"- {t}" for t in trades[:20]])
@@ -209,14 +230,17 @@ def daily_congress_summary(trades):
 My Portfolio:
 {PORTFOLIO}
 
-Give me a daily congressional trading summary:
-1. TOP 5 MOST INTERESTING TRADES TODAY: Pick the 5 most significant trades.
-   For each: Politician name, stock ticker, buy/sell, why it's interesting.
-2. SHOULD I FOLLOW ANY: Which if any should I copy? Be specific.
-3. PATTERN: Is there a theme in today's trades? (e.g. lots of defense buys, tech sells)
-4. BIGGEST SIGNAL: What is the single most important trade today and why?
+Give me today's strongest congressional trading signals only.
+Ignore small, routine or irrelevant trades.
 
-Be direct and specific. No preamble.""")
+1. TOP 3 STRONGEST SIGNALS TODAY: Only the most significant trades worth acting on.
+   For each: Politician, ticker, buy/sell, amount, why it matters.
+2. FOLLOW ANY: Which specifically should I copy and how much to invest?
+3. PATTERN: Any clear theme across today's trades?
+4. VERDICT: Is today's congressional activity bullish or bearish overall?
+
+If there are no strong signals today just say: NO STRONG SIGNALS TODAY.
+Be direct. No filler. No preamble.""")
 
 
 def weekly_new_stock_suggestions():
@@ -228,6 +252,7 @@ I want stocks like the next Nvidia or BYD - companies that dominate a niche comp
 then expand globally. Early stage, undervalued, 10x+ potential.
 
 Suggest 3 NEW stocks I don't already own to research this week.
+Only suggest ones you are genuinely excited about.
 For each:
 1. Name and ticker
 2. What they do in 2 sentences
@@ -235,14 +260,16 @@ For each:
 4. Current size (small/mid/large cap)
 5. Biggest risk
 6. How it fits my existing portfolio
+7. Conviction level: HIGH / MEDIUM
 
+Only include HIGH or MEDIUM conviction picks.
 Focus on: niche dominators, AI, space, defense tech, biotech, quantum, robotics,
 emerging market disruptors, companies big at home about to go global.
-Prioritise undiscovered gems nobody is talking about. No preamble.""")
+No preamble.""")
 
 
 def check_congress_trades():
-    """Check for new congressional trades and send individual alerts for important ones."""
+    """Check for new congressional trades. Only alert on high scoring ones."""
     print(f"Checking congressional trades... {datetime.now().strftime('%H:%M')}")
     seen = load_seen()
     found = 0
@@ -265,14 +292,24 @@ def check_congress_trades():
                 is_our_stock = any(t.lower() in text for t in PORTFOLIO_TICKERS)
 
                 if is_watched_politician or is_our_stock:
-                    print(f"Congress trade found: {title}")
-                    found += 1
-                    analysis = analyse_congress_trade(title, summary)
-                    send_telegram(
-                        f"CONGRESSIONAL TRADE ALERT\n\n"
-                        f"{title}\n\n"
-                        f"{analysis}"
-                    )
+                    # Score the trade — only alert if 7 or above
+                    try:
+                        score_text = score_congress_trade(title, summary)
+                        score = int(''.join(filter(str.isdigit, score_text[:5])))
+                    except:
+                        score = 5
+
+                    print(f"Congress trade score {score}/10: {title}")
+
+                    if score >= 7:
+                        found += 1
+                        analysis = analyse_congress_trade(title, summary)
+                        send_telegram(
+                            f"CONGRESSIONAL TRADE ALERT (Score: {score}/10)\n\n"
+                            f"{title}\n\n"
+                            f"{analysis}"
+                        )
+
                     seen.add(aid)
                     time.sleep(1)
 
@@ -280,12 +317,12 @@ def check_congress_trades():
             print(f"Congress feed error {feed_url}: {e}")
 
     save_seen(seen)
-    print(f"Congress check done. Found {found} relevant trades.")
+    print(f"Congress check done. Sent {found} high score alerts.")
     return all_trades_today
 
 
 def send_daily_congress_summary():
-    """Send daily summary of all congressional trades at 6pm."""
+    """Send daily summary of strongest congressional trades at 6pm."""
     print("Sending daily congressional trading summary...")
     all_trades = []
 
@@ -342,23 +379,30 @@ def check_news():
 
                 if any(k.lower() in title.lower() or k.lower() in summary.lower()
                        for k in ALL_KEYWORDS):
-                    print(f"Found: {title}")
-                    found += 1
 
+                    # Get portfolio impact and only send if HIGH urgency
                     portfolio_advice = analyse_portfolio_impact(title, summary)
-                    send_telegram(
-                        f"PORTFOLIO ALERT\n\n"
-                        f"{title}\n\n"
-                        f"{portfolio_advice}"
-                    )
-                    time.sleep(1)
 
-                    opportunity = find_opportunity_plays(title, summary)
-                    send_telegram(
-                        f"OPPORTUNITY ALERT\n\n"
-                        f"{title}\n\n"
-                        f"{opportunity}"
-                    )
+                    if is_high_urgency(portfolio_advice):
+                        print(f"HIGH urgency: {title}")
+                        found += 1
+                        send_telegram(
+                            f"PORTFOLIO ALERT\n\n"
+                            f"{title}\n\n"
+                            f"{portfolio_advice}"
+                        )
+                        time.sleep(1)
+
+                        opportunity = find_opportunity_plays(title, summary)
+                        # Only send opportunity if confidence is high/medium
+                        if "confidence: high" in opportunity.lower() or "confidence: medium" in opportunity.lower():
+                            send_telegram(
+                                f"OPPORTUNITY ALERT\n\n"
+                                f"{title}\n\n"
+                                f"{opportunity}"
+                            )
+                    else:
+                        print(f"Skipped (not HIGH urgency): {title}")
 
                     seen.add(aid)
                     time.sleep(1)
@@ -367,7 +411,7 @@ def check_news():
             print(f"Error with {feed_url}: {e}")
 
     save_seen(seen)
-    print(f"Done. Found {found} relevant articles.")
+    print(f"Done. Sent {found} high urgency alerts.")
 
 
 def weekly_suggestions():
