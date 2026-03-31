@@ -98,11 +98,27 @@ CONGRESS_FEEDS = [
     "https://senatestockwatcher.com/rss",
 ]
 
+# Expanded list of politicians worth tracking
 WATCH_POLITICIANS = [
+    # Most watched - proven track records
     "pelosi", "paul pelosi",
     "tuberville", "crenshaw",
     "collins", "loeffler",
     "burr", "greene",
+    "ocasio",
+    # Senate heavy traders
+    "ossoff", "warnock", "kelly",
+    "manchin", "capito", "inhofe",
+    "lankford", "scott", "rubio", "warren",
+    # House heavy traders
+    "mccaul", "gottheimer", "suozzi",
+    "tenney", "self", "moore", "clyde",
+    "lucas", "pfluger", "van duyne",
+    "steel", "obernolte", "dunn",
+    "fallon", "nehls", "good", "ellzey",
+    "austin scott", "perry", "fitzgerald",
+    "joyce", "johnson", "weber", "babin",
+    "carter", "olson", "brady", "cloud",
 ]
 
 CACHE_FILE = Path("seen.json")
@@ -142,7 +158,6 @@ def ask_claude(prompt):
 
 
 def is_high_urgency(text):
-    """Only return True if Claude rated this as HIGH urgency."""
     return "urgency: high" in text.lower() or "high" in text.lower()[:300]
 
 
@@ -187,7 +202,6 @@ Be specific with tickers. Only send if CONFIDENCE is HIGH or MEDIUM. No preamble
 
 
 def score_congress_trade(title, summary):
-    """Ask Claude to score a trade 1-10. Only alert if score >= 7."""
     return ask_claude(f"""A US politician filed this stock trade:
 {title}
 {summary}
@@ -219,7 +233,6 @@ Be direct. No preamble.""")
 
 
 def daily_congress_summary(trades):
-    """Summarise only the strongest congressional trades of the day."""
     if not trades:
         return None
     trades_text = "\n".join([f"- {t}" for t in trades[:20]])
@@ -269,7 +282,6 @@ No preamble.""")
 
 
 def check_congress_trades():
-    """Check for new congressional trades. Only alert on high scoring ones."""
     print(f"Checking congressional trades... {datetime.now().strftime('%H:%M')}")
     seen = load_seen()
     found = 0
@@ -292,7 +304,6 @@ def check_congress_trades():
                 is_our_stock = any(t.lower() in text for t in PORTFOLIO_TICKERS)
 
                 if is_watched_politician or is_our_stock:
-                    # Score the trade — only alert if 7 or above
                     try:
                         score_text = score_congress_trade(title, summary)
                         score = int(''.join(filter(str.isdigit, score_text[:5])))
@@ -322,7 +333,6 @@ def check_congress_trades():
 
 
 def send_daily_congress_summary():
-    """Send daily summary of strongest congressional trades at 6pm."""
     print("Sending daily congressional trading summary...")
     all_trades = []
 
@@ -380,7 +390,6 @@ def check_news():
                 if any(k.lower() in title.lower() or k.lower() in summary.lower()
                        for k in ALL_KEYWORDS):
 
-                    # Get portfolio impact and only send if HIGH urgency
                     portfolio_advice = analyse_portfolio_impact(title, summary)
 
                     if is_high_urgency(portfolio_advice):
@@ -394,7 +403,6 @@ def check_news():
                         time.sleep(1)
 
                         opportunity = find_opportunity_plays(title, summary)
-                        # Only send opportunity if confidence is high/medium
                         if "confidence: high" in opportunity.lower() or "confidence: medium" in opportunity.lower():
                             send_telegram(
                                 f"OPPORTUNITY ALERT\n\n"
