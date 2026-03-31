@@ -76,11 +76,11 @@ OPPORTUNITY_KEYWORDS = [
     "flying taxi", "electric vehicle", "BYD", "Tesla",
     "supply chain", "port strike", "food crisis",
     "cloud computing", "AI cloud", "railway", "railroad",
-    "police", "law enforcement", "body camera", "taser",
-    "intelligence agency", "FBI", "CIA", "phone extraction",
+    "police", "law enforcement", "body camera",
+    "intelligence agency", "FBI", "CIA",
     "restaurant robot", "hotel robot", "service robot",
-    "quantum security", "quantum encryption", "post quantum",
-    "bitcoin mining", "crypto mining", "AI data centre",
+    "quantum security", "quantum encryption",
+    "bitcoin mining", "crypto mining",
     "decentralised exchange", "DeFi",
 ]
 
@@ -178,14 +178,11 @@ They love under the radar companies that dominate a niche like DJI dominates dro
 Be specific with tickers. Prioritise undiscovered niche dominators. No preamble.""")
 
 
-def analyse_congress_trade(politician, ticker, trade_type, amount, summary):
+def analyse_congress_trade(title, summary):
     return ask_claude(f"""A US politician just filed a stock trade:
 
-Politician: {politician}
-Stock: {ticker}
-Trade type: {trade_type}
-Amount: {amount}
-Details: {summary}
+{title}
+{summary}
 
 My Portfolio:
 {PORTFOLIO}
@@ -193,11 +190,33 @@ My Portfolio:
 1. WHY SIGNIFICANT: Why would this politician buy/sell this now? What do they likely know?
 2. SHOULD I FOLLOW: Should I copy this trade? Yes/No and why.
 3. CONNECTION: Does this relate to any of my existing holdings?
-4. NEW OPPORTUNITY: If I don't own this stock, is it worth buying? Give ticker and reason.
+4. NEW OPPORTUNITY: If I don't own this stock, is it worth buying? Ticker and reason.
 5. URGENCY: HIGH / MEDIUM / LOW - how fast should I act?
 
-Remember: Politicians file trades up to 45 days late - factor in the delay.
+Note: Politicians file trades up to 45 days late - factor in the delay.
 Be direct. No preamble.""")
+
+
+def daily_congress_summary(trades):
+    """Ask Claude to summarise the top 5 congressional trades of the day."""
+    if not trades:
+        return None
+    trades_text = "\n".join([f"- {t}" for t in trades[:20]])
+    return ask_claude(f"""Here are today's congressional stock trade filings:
+
+{trades_text}
+
+My Portfolio:
+{PORTFOLIO}
+
+Give me a daily congressional trading summary:
+1. TOP 5 MOST INTERESTING TRADES TODAY: Pick the 5 most significant trades.
+   For each: Politician name, stock ticker, buy/sell, why it's interesting.
+2. SHOULD I FOLLOW ANY: Which if any should I copy? Be specific.
+3. PATTERN: Is there a theme in today's trades? (e.g. lots of defense buys, tech sells)
+4. BIGGEST SIGNAL: What is the single most important trade today and why?
+
+Be direct and specific. No preamble.""")
 
 
 def weekly_new_stock_suggestions():
@@ -223,9 +242,11 @@ Prioritise undiscovered gems nobody is talking about. No preamble.""")
 
 
 def check_congress_trades():
+    """Check for new congressional trades and send individual alerts for important ones."""
     print(f"Checking congressional trades... {datetime.now().strftime('%H:%M')}")
     seen = load_seen()
     found = 0
+    all_trades_today = []
 
     for feed_url in CONGRESS_FEEDS:
         try:
@@ -233,8 +254,9 @@ def check_congress_trades():
             for entry in feed.entries[:20]:
                 title = entry.get("title", "")
                 summary = entry.get("summary", entry.get("description", ""))
-                aid = "congress_" + hashlib.md5(title.encode()).hexdigest()
+                all_trades_today.append(f"{title} — {summary[:100]}")
 
+                aid = "congress_" + hashlib.md5(title.encode()).hexdigest()
                 if aid in seen:
                     continue
 
@@ -245,21 +267,12 @@ def check_congress_trades():
                 if is_watched_politician or is_our_stock:
                     print(f"Congress trade found: {title}")
                     found += 1
-
-                    analysis = analyse_congress_trade(
-                        politician=title,
-                        ticker=title,
-                        trade_type="Purchase" if "purchase" in text or "bought" in text else "Sale",
-                        amount=summary[:100],
-                        summary=summary
-                    )
-
+                    analysis = analyse_congress_trade(title, summary)
                     send_telegram(
                         f"CONGRESSIONAL TRADE ALERT\n\n"
                         f"{title}\n\n"
                         f"{analysis}"
                     )
-
                     seen.add(aid)
                     time.sleep(1)
 
@@ -268,6 +281,39 @@ def check_congress_trades():
 
     save_seen(seen)
     print(f"Congress check done. Found {found} relevant trades.")
+    return all_trades_today
+
+
+def send_daily_congress_summary():
+    """Send daily summary of all congressional trades at 6pm."""
+    print("Sending daily congressional trading summary...")
+    all_trades = []
+
+    for feed_url in CONGRESS_FEEDS:
+        try:
+            feed = feedparser.parse(feed_url)
+            for entry in feed.entries[:30]:
+                title = entry.get("title", "")
+                summary = entry.get("summary", entry.get("description", ""))
+                all_trades.append(f"{title} — {summary[:100]}")
+        except Exception as e:
+            print(f"Feed error: {e}")
+
+    if not all_trades:
+        send_telegram(
+            f"DAILY CONGRESS SUMMARY\n"
+            f"{datetime.now().strftime('%d %b %Y')}\n\n"
+            f"No congressional trades filed today."
+        )
+        return
+
+    summary = daily_congress_summary(all_trades)
+    if summary:
+        send_telegram(
+            f"DAILY CONGRESS SUMMARY\n"
+            f"{datetime.now().strftime('%d %b %Y')}\n\n"
+            f"{summary}"
+        )
 
 
 def check_news():
@@ -341,6 +387,7 @@ parser = argparse.ArgumentParser()
 parser.add_argument("--once", action="store_true")
 parser.add_argument("--weekly", action="store_true")
 parser.add_argument("--congress", action="store_true")
+parser.add_argument("--daily-summary", action="store_true")
 args = parser.parse_args()
 
 if args.weekly:
@@ -353,6 +400,8 @@ if args.weekly:
     )
 elif args.congress:
     check_congress_trades()
+elif getattr(args, 'daily_summary', False):
+    send_daily_congress_summary()
 elif args.once:
     check_news()
     check_congress_trades()
@@ -360,6 +409,7 @@ else:
     schedule.every(30).minutes.do(check_news)
     schedule.every(1).hours.do(check_congress_trades)
     schedule.every().monday.at("08:00").do(weekly_suggestions)
+    schedule.every().day.at("18:00").do(send_daily_congress_summary)
     check_news()
     check_congress_trades()
     while True:

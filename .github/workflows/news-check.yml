@@ -4,6 +4,7 @@ on:
   schedule:
     - cron: '0 * * * *'      # Every hour - news + congress check
     - cron: '0 8 * * 1'      # Every Monday 8am - weekly stock suggestions
+    - cron: '0 18 * * *'     # Every day 6pm - daily congress summary
   workflow_dispatch:
     inputs:
       mode:
@@ -15,6 +16,7 @@ on:
           - news
           - weekly
           - congress
+          - daily-summary
 
 jobs:
   check:
@@ -40,6 +42,14 @@ jobs:
       - name: Send weekly stock suggestions
         if: github.event.schedule == '0 8 * * 1' || (github.event_name == 'workflow_dispatch' && inputs.mode == 'weekly')
         run: python bot.py --weekly
+        env:
+          CLAUDE_API_KEY: ${{ secrets.CLAUDE_API_KEY }}
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+
+      - name: Send daily congress summary
+        if: github.event.schedule == '0 18 * * *' || (github.event_name == 'workflow_dispatch' && inputs.mode == 'daily-summary')
+        run: python bot.py --daily-summary
         env:
           CLAUDE_API_KEY: ${{ secrets.CLAUDE_API_KEY }}
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
