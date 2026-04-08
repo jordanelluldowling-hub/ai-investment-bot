@@ -1,6 +1,28 @@
-import os
+"""
+AI Investment News Alert Bot — v2
+
+Monitors 15+ RSS feeds, congressional trades, and IPO filings.
+Sends high-signal alerts to Telegram via Claude AI analysis.
+
+Alert types:
+  PORTFOLIO ALERT    — how news impacts your 16 holdings
+  OPPORTUNITY ALERT  — small/mid cap stocks that could benefit
+  CONGRESS SIGNAL    — politician stock trades (scored 1-10)
+  IPO ALERT          — upcoming IPOs with pop potential score
+
+Usage (GitHub Actions modes):
+    python bot.py --mode news           # Check RSS feeds (hourly)
+    python bot.py --mode congress       # Check congressional trades (hourly)
+    python bot.py --mode daily-summary  # Daily 6pm congress summary
+    python bot.py --mode weekly         # Monday 8am weekly stock picks
+    python bot.py --mode ipo            # Check IPO calendar (daily)
+    python bot.py --mode test           # Send test Telegram message
+"""
+
+import argparse
 import hashlib
 import json
+import logging
 import time
 from datetime import datetime
 from pathlib import Path
@@ -8,477 +30,450 @@ from pathlib import Path
 import anthropic
 import feedparser
 import requests
-import schedule
 
-CLAUDE_API_KEY = os.environ.get("CLAUDE_API_KEY", "")
-TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN", "")
-TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
+import config
+from congress_tracker import (
+    get_all_recent_trades,
+    format_trade_alert,
+    format_daily_summary,
+)
+from ipo_tracker import check_ipos
 
-PORTFOLIO = """
-TIER 1 - CORE (never sell):
-- Nvidia (NVDA) $50 - AI infrastructure
-- Bitcoin (BTC) $50 - Crypto
-- Rheinmetall (RHM) $50 - Defense
+# --- Logging ---
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+    handlers=[
+        logging.StreamHandler(),
+        logging.FileHandler("bot.log"),
+    ],
+)
+log = logging.getLogger(__name__)
 
-TIER 2 - HIGH CONVICTION:
-- Palantir (PLTR) $40 - AI + government
-- IonQ (IONQ) $35 - Quantum computing
-- Rocket Lab (RKLB) $35 - Space
-- Axon Enterprise (AXON) $35 - AI law enforcement
-- BigBear.ai (BBAI) $30 - Defense AI analytics
-
-TIER 3 - MOONSHOTS:
-- BTQ Technologies (BTQ) $25 - Quantum cybersecurity
-- Richtech Robotics (RR) $25 - Restaurant/hotel AI robots
-- Ondas Holdings (ONDS) $20 - AI drones for railways and defense
-- Cellebrite (CLBT) $20 - Intelligence agency phone extraction
-- IREN (IREN) $20 - AI data centres + Bitcoin mining
-- Solana (SOL) $10 - Crypto
-- Injective (INJ) $5 - Decentralised exchange crypto
-
-WILDCARD:
-- CoreWeave (CRWV) $50 - Nvidia backed AI cloud
-
-Monthly budget: 500 euros
-Strategy: Buy dips, hold 5 years, never sell Tier 1
-"""
-
-PORTFOLIO_TICKERS = [
-    "Nvidia", "NVDA", "Bitcoin", "BTC",
-    "Rheinmetall", "RHM", "Palantir", "PLTR",
-    "IonQ", "IONQ", "Rocket Lab", "RKLB",
-    "Axon", "AXON", "BigBear", "BBAI",
-    "BTQ Technologies", "BTQ",
-    "Richtech Robotics", "RR",
-    "Ondas", "ONDS", "Cellebrite", "CLBT",
-    "IREN", "Solana", "SOL",
-    "Injective", "INJ", "CoreWeave", "CRWV",
-]
-
-OPPORTUNITY_KEYWORDS = [
-    "artificial intelligence", "AI boom", "AI chip", "machine learning",
-    "semiconductor", "quantum computing", "robotics", "automation",
-    "data centre", "OpenAI", "Microsoft", "Google", "Meta", "Apple",
-    "SpaceX", "space race", "NASA", "satellite", "defense spending",
-    "NATO", "military contract", "drone", "Lockheed", "arms",
-    "oil", "gas", "gold", "silver", "lithium", "uranium", "nuclear",
-    "OPEC", "energy crisis", "hydrogen", "solar", "Strait of Hormuz",
-    "interest rate", "Federal Reserve", "Fed", "rate cut", "rate hike",
-    "inflation", "recession", "bank collapse", "IMF", "central bank",
-    "Middle East", "Israel", "Iran", "Ukraine", "Russia", "China",
-    "Taiwan", "sanctions", "war", "conflict",
-    "IPO", "goes public", "merger", "acquisition", "takeover",
-    "bankruptcy", "short squeeze", "market crash", "stock surge",
-    "drug approval", "FDA", "cancer", "vaccine", "biotech", "pandemic",
-    "bitcoin", "crypto", "ethereum", "ETF approval", "crypto regulation",
-    "flying taxi", "electric vehicle", "BYD", "Tesla",
-    "supply chain", "port strike", "food crisis",
-    "cloud computing", "AI cloud", "railway", "railroad",
-    "police", "law enforcement", "body camera",
-    "intelligence agency", "FBI", "CIA",
-    "restaurant robot", "hotel robot", "service robot",
-    "quantum security", "quantum encryption",
-    "bitcoin mining", "crypto mining",
-    "decentralised exchange", "DeFi",
-]
-
-ALL_KEYWORDS = list(set(PORTFOLIO_TICKERS + OPPORTUNITY_KEYWORDS))
-
-RSS_FEEDS = [
-    "https://feeds.reuters.com/reuters/businessNews",
-    "https://feeds.bbci.co.uk/news/business/rss.xml",
-    "https://feeds.bbci.co.uk/news/world/rss.xml",
-    "https://oilprice.com/rss/main",
-]
-
-CONGRESS_FEEDS = [
-    "https://housestockwatcher.com/rss",
-    "https://senatestockwatcher.com/rss",
-]
-
-# Politicians AND their known spouses/relatives who trade on their behalf
-WATCH_POLITICIANS = [
-    # --- Pelosi family ---
-    "pelosi", "paul pelosi",
-    # --- Tuberville ---
-    "tuberville",
-    # --- Crenshaw ---
-    "crenshaw",
-    # --- Collins ---
-    "collins",
-    # --- Loeffler / Sprecher ---
-    "loeffler", "jeff sprecher",           # husband of Kelly Loeffler, ICE Exchange CEO
-    # --- Burr ---
-    "burr",
-    # --- Greene ---
-    "greene",
-    # --- Ocasio ---
-    "ocasio",
-    # --- Senate traders ---
-    "ossoff", "warnock", "kelly",
-    "manchin", "capito", "inhofe",
-    "lankford", "scott", "rubio", "warren",
-    # --- House traders ---
-    "mccaul", "gottheimer", "suozzi",
-    "tenney", "self", "moore", "clyde",
-    "lucas", "pfluger", "van duyne",
-    "steel", "obernolte", "dunn",
-    "fallon", "nehls", "good", "ellzey",
-    "austin scott", "perry", "fitzgerald",
-    "joyce", "johnson", "weber", "babin",
-    "carter", "olson", "brady", "cloud",
-    # --- Known active spouses/dependents ---
-    "louise",          # Louise Mccaul - wife of Michael McCaul
-    "julia staley",    # wife of Rep. Jake Ellzey
-    "kathryn",         # Kathryn Tuberville
-    "stacey",          # Stacey Scott
-    "spouse", "dependent", "joint",   # catch all filer types
-]
-
-CACHE_FILE = Path("seen.json")
+# --- Seen articles cache ---
+CACHE_FILE = Path("seen_articles.json")
 
 
-def load_seen():
+def load_seen_cache() -> set:
     if CACHE_FILE.exists():
-        return set(json.loads(CACHE_FILE.read_text()))
+        with open(CACHE_FILE) as f:
+            return set(json.load(f))
     return set()
 
 
-def save_seen(seen):
-    CACHE_FILE.write_text(json.dumps(list(seen)))
+def save_seen_cache(seen: set) -> None:
+    with open(CACHE_FILE, "w") as f:
+        json.dump(list(seen), f)
 
 
-def send_telegram(message):
-    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-    try:
-        resp = requests.post(
-            url,
-            json={"chat_id": TELEGRAM_CHAT_ID, "text": message},
-            timeout=10
-        )
-        resp.raise_for_status()
-    except Exception as e:
-        print(f"Telegram error: {e}")
+def article_id(title: str, link: str) -> str:
+    return hashlib.md5(f"{title}{link}".encode()).hexdigest()
 
 
-def ask_claude(prompt):
-    client = anthropic.Anthropic(api_key=CLAUDE_API_KEY)
+# ============================================================
+# TELEGRAM
+# ============================================================
+
+def send_telegram(message: str) -> bool:
+    """Send message to Telegram. Falls back to console if not configured."""
+    if not config.TELEGRAM_TOKEN or not config.TELEGRAM_CHAT_ID:
+        log.warning("Telegram not configured — printing to console.")
+        print("\n" + "=" * 60)
+        print(message)
+        print("=" * 60 + "\n")
+        return True
+
+    url = f"https://api.telegram.org/bot{config.TELEGRAM_TOKEN}/sendMessage"
+    # Telegram has a 4096 char limit per message
+    chunks = [message[i : i + 4000] for i in range(0, len(message), 4000)]
+
+    for chunk in chunks:
+        try:
+            resp = requests.post(
+                url,
+                json={"chat_id": config.TELEGRAM_CHAT_ID, "text": chunk},
+                timeout=10,
+            )
+            resp.raise_for_status()
+        except requests.RequestException as e:
+            log.error(f"Telegram send failed: {e}")
+            return False
+
+    return True
+
+
+# ============================================================
+# NEWS MONITORING
+# ============================================================
+
+def fetch_relevant_articles() -> list[dict]:
+    """Fetch articles from all RSS feeds and filter by keywords."""
+    seen = load_seen_cache()
+    relevant = []
+
+    for feed_url in config.RSS_FEEDS:
+        log.info(f"Checking feed: {feed_url}")
+        try:
+            feed = feedparser.parse(feed_url)
+        except Exception as e:
+            log.warning(f"Failed to fetch {feed_url}: {e}")
+            continue
+
+        for entry in feed.entries[: config.MAX_ITEMS_PER_FEED]:
+            title = entry.get("title", "")
+            summary = entry.get("summary", entry.get("description", ""))
+            link = entry.get("link", "")
+            aid = article_id(title, link)
+
+            if aid in seen:
+                continue
+
+            if any(
+                kw.lower() in title.lower() or kw.lower() in summary.lower()
+                for kw in config.TRIGGER_KEYWORDS
+            ):
+                relevant.append(
+                    {"title": title, "summary": summary, "link": link, "id": aid}
+                )
+
+    return relevant
+
+
+def analyse_portfolio_impact(title: str, summary: str) -> str:
+    """How does this news affect existing holdings?"""
+    client = anthropic.Anthropic(api_key=config.CLAUDE_API_KEY)
     msg = client.messages.create(
-        model="claude-sonnet-4-6",
-        max_tokens=500,
-        messages=[{"role": "user", "content": prompt}]
+        model=config.CLAUDE_MODEL,
+        max_tokens=config.MAX_RESPONSE_TOKENS,
+        messages=[
+            {
+                "role": "user",
+                "content": f"""
+News: {title}
+Summary: {summary}
+
+My Portfolio:
+{config.PORTFOLIO}
+
+Answer in exactly 3 bullet points:
+1. IMPACT: Which of my specific holdings does this affect and how?
+2. ACTION: Buy more / sell / hold — specify which ticker and why now.
+3. URGENCY: HIGH / MEDIUM / LOW — one sentence explaining the time sensitivity.
+
+Be direct. Name specific tickers. No preamble.
+""",
+            }
+        ],
     )
     return msg.content[0].text
 
 
-def is_high_urgency(text):
-    return "urgency: high" in text.lower() or "high" in text.lower()[:300]
+def find_opportunity_plays(title: str, summary: str) -> str:
+    """What small/mid cap stocks could benefit most from this event?"""
+    client = anthropic.Anthropic(api_key=config.CLAUDE_API_KEY)
+    msg = client.messages.create(
+        model=config.CLAUDE_MODEL,
+        max_tokens=config.MAX_RESPONSE_TOKENS,
+        messages=[
+            {
+                "role": "user",
+                "content": f"""
+This major news just broke:
+{title}
 
-
-def analyse_portfolio_impact(title, summary):
-    return ask_claude(f"""News: {title}
 Summary: {summary}
 
-My Portfolio:
-{PORTFOLIO}
-
-In exactly 3 bullet points:
-1. IMPACT: Which of my specific holdings does this affect and how?
-2. ACTION: Buy more / hold / trim - which holding and why?
-3. URGENCY: HIGH / MEDIUM / LOW and one sentence why.
-
-Only rate as HIGH if this could move my portfolio by 5%+ within 48 hours.
-Be direct. No preamble.""")
-
-
-def find_opportunity_plays(title, summary):
-    return ask_claude(f"""News: {title}
-Summary: {summary}
-
-My existing portfolio:
-{PORTFOLIO}
-
-You are an elite small/mid cap stock analyst hunting for the next Nvidia-style opportunity.
-The investor has a 5 year horizon, buys dips aggressively, wants 10x+ returns.
-They love under the radar companies that dominate a niche like DJI dominates drones.
-Only suggest plays you are genuinely excited about - no filler picks.
-
-1. EVENT TYPE: What kind of catalyst is this?
-2. TOP 3 PLAYS: Specific stocks NOT already in my portfolio with ticker symbols.
-   Focus on small/mid cap niche dominators with 10x potential. One sentence per pick.
-3. FITS MY PORTFOLIO: Does this strengthen any existing positions?
-4. WHAT TO RESEARCH: 2 most important things to check first.
-5. RISK: Biggest reason these plays could go wrong.
-6. WINDOW: How long does this opportunity last? (hours/days/weeks/months)
-7. CONFIDENCE: HIGH / MEDIUM / LOW
-
-Be specific with tickers. Only include HIGH or MEDIUM confidence plays. No preamble.""")
-
-
-def score_congress_trade(title, summary):
-    return ask_claude(f"""A US politician or their spouse/relative filed this stock trade:
-{title}
-{summary}
-
-Score this trade from 1-10 for how significant it is as an investment signal.
-10 = Pelosi's husband buying millions in a sector days before a government contract
-5 = A senator buying a small position in a well known stock
-1 = A senator selling $1000 of a random stock
-
-Extra weight if: large amount, spouse/dependent filing, committee member trading in their sector.
-
-Respond with ONLY a number from 1-10. Nothing else.""")
-
-
-def analyse_congress_trade(title, summary):
-    return ask_claude(f"""A US politician or their spouse just filed a significant stock trade:
-
-{title}
-{summary}
-
-My Portfolio:
-{PORTFOLIO}
-
-1. WHO FILED: Is this the politician directly or their spouse/dependent? Why does that matter?
-2. WHY SIGNIFICANT: What do they likely know? Which committee are they on?
-3. SHOULD I FOLLOW: Yes/No and exactly how much to invest if yes.
-4. CONNECTION: Does this relate to any of my existing holdings?
-5. NEW OPPORTUNITY: If I don't own this stock, should I buy it? Ticker and reason.
-6. URGENCY: HIGH / MEDIUM / LOW - how fast should I act?
-
-Note: Politicians file up to 45 days late - factor in the delay.
-Be direct. No preamble.""")
-
-
-def daily_congress_summary(trades):
-    if not trades:
-        return None
-    trades_text = "\n".join([f"- {t}" for t in trades[:20]])
-    return ask_claude(f"""Here are today's congressional stock trade filings (including spouses and dependents):
-
-{trades_text}
-
-My Portfolio:
-{PORTFOLIO}
-
-Give me today's strongest signals only. Ignore small or routine trades.
-
-1. TOP 3 STRONGEST SIGNALS TODAY:
-   For each: Who filed (politician or spouse?), ticker, buy/sell, amount, why it matters.
-2. FOLLOW ANY: Which specifically should I copy and how much?
-3. PATTERN: Any clear theme across today's trades?
-4. VERDICT: Bullish or bearish signal overall from congress today?
-
-If no strong signals: just say NO STRONG SIGNALS TODAY.
-Be direct. No filler. No preamble.""")
-
-
-def weekly_new_stock_suggestions():
-    return ask_claude(f"""My current investment portfolio:
-{PORTFOLIO}
-
-I am a Gen Z investor, 5 year horizon, 500 euros/month.
-I want stocks like the next Nvidia or BYD - dominate a niche, expand globally, 10x+ potential.
-
-Suggest 3 NEW stocks I don't already own to research this week.
-Only ones you are genuinely excited about.
-For each:
-1. Name and ticker
-2. What they do in 2 sentences
-3. Why they could 10x in 5 years
-4. Current size (small/mid/large cap)
-5. Biggest risk
-6. How it fits my existing portfolio
-7. Conviction: HIGH / MEDIUM only
-
-Focus on: niche dominators, AI, space, defense tech, biotech, quantum, robotics,
-emerging market disruptors, companies big at home about to go global.
-No preamble.""")
-
-
-def check_congress_trades():
-    print(f"Checking congressional trades... {datetime.now().strftime('%H:%M')}")
-    seen = load_seen()
-    found = 0
-    all_trades_today = []
-
-    for feed_url in CONGRESS_FEEDS:
-        try:
-            feed = feedparser.parse(feed_url)
-            for entry in feed.entries[:20]:
-                title = entry.get("title", "")
-                summary = entry.get("summary", entry.get("description", ""))
-                all_trades_today.append(f"{title} — {summary[:100]}")
-
-                aid = "congress_" + hashlib.md5(title.encode()).hexdigest()
-                if aid in seen:
-                    continue
-
-                text = (title + " " + summary).lower()
-                is_watched = any(p in text for p in WATCH_POLITICIANS)
-                is_our_stock = any(t.lower() in text for t in PORTFOLIO_TICKERS)
-
-                if is_watched or is_our_stock:
-                    try:
-                        score_text = score_congress_trade(title, summary)
-                        score = int(''.join(filter(str.isdigit, score_text[:5])))
-                    except:
-                        score = 5
-
-                    print(f"Score {score}/10: {title}")
-
-                    if score >= 7:
-                        found += 1
-                        analysis = analyse_congress_trade(title, summary)
-                        send_telegram(
-                            f"CONGRESSIONAL TRADE ALERT (Score: {score}/10)\n\n"
-                            f"{title}\n\n"
-                            f"{analysis}"
-                        )
-
-                    seen.add(aid)
-                    time.sleep(1)
-
-        except Exception as e:
-            print(f"Congress feed error {feed_url}: {e}")
-
-    save_seen(seen)
-    print(f"Congress check done. Sent {found} high score alerts.")
-    return all_trades_today
-
-
-def send_daily_congress_summary():
-    print("Sending daily congressional trading summary...")
-    all_trades = []
-
-    for feed_url in CONGRESS_FEEDS:
-        try:
-            feed = feedparser.parse(feed_url)
-            for entry in feed.entries[:30]:
-                title = entry.get("title", "")
-                summary = entry.get("summary", entry.get("description", ""))
-                all_trades.append(f"{title} — {summary[:100]}")
-        except Exception as e:
-            print(f"Feed error: {e}")
-
-    if not all_trades:
-        send_telegram(
-            f"DAILY CONGRESS SUMMARY\n"
-            f"{datetime.now().strftime('%d %b %Y')}\n\n"
-            f"No congressional trades filed today."
-        )
-        return
-
-    summary = daily_congress_summary(all_trades)
-    if summary:
-        send_telegram(
-            f"DAILY CONGRESS SUMMARY\n"
-            f"{datetime.now().strftime('%d %b %Y')}\n\n"
-            f"{summary}"
-        )
-
-
-def check_news():
-    print(f"Checking news... {datetime.now().strftime('%H:%M')}")
-
-    if not CLAUDE_API_KEY:
-        print("ERROR: CLAUDE_API_KEY not set")
-        return
-    if not TELEGRAM_TOKEN:
-        print("ERROR: TELEGRAM_TOKEN not set")
-        return
-
-    seen = load_seen()
-    found = 0
-
-    for feed_url in RSS_FEEDS:
-        try:
-            feed = feedparser.parse(feed_url)
-            for entry in feed.entries[:10]:
-                title = entry.get("title", "")
-                summary = entry.get("summary", "")
-                aid = hashlib.md5(title.encode()).hexdigest()
-
-                if aid in seen:
-                    continue
-
-                if any(k.lower() in title.lower() or k.lower() in summary.lower()
-                       for k in ALL_KEYWORDS):
-
-                    portfolio_advice = analyse_portfolio_impact(title, summary)
-
-                    if is_high_urgency(portfolio_advice):
-                        print(f"HIGH urgency: {title}")
-                        found += 1
-                        send_telegram(
-                            f"PORTFOLIO ALERT\n\n"
-                            f"{title}\n\n"
-                            f"{portfolio_advice}"
-                        )
-                        time.sleep(1)
-
-                        opportunity = find_opportunity_plays(title, summary)
-                        if "confidence: high" in opportunity.lower() or "confidence: medium" in opportunity.lower():
-                            send_telegram(
-                                f"OPPORTUNITY ALERT\n\n"
-                                f"{title}\n\n"
-                                f"{opportunity}"
-                            )
-                    else:
-                        print(f"Skipped (not HIGH urgency): {title}")
-
-                    seen.add(aid)
-                    time.sleep(1)
-
-        except Exception as e:
-            print(f"Error with {feed_url}: {e}")
-
-    save_seen(seen)
-    print(f"Done. Sent {found} high urgency alerts.")
-
-
-def weekly_suggestions():
-    if datetime.now().weekday() == 0:
-        print("Sending weekly stock suggestions...")
-        suggestions = weekly_new_stock_suggestions()
-        send_telegram(
-            f"WEEKLY STOCK PICKS\n"
-            f"{datetime.now().strftime('%d %b %Y')}\n\n"
-            f"3 new stocks to research this week:\n\n"
-            f"{suggestions}"
-        )
-
-
-import argparse
-parser = argparse.ArgumentParser()
-parser.add_argument("--once", action="store_true")
-parser.add_argument("--weekly", action="store_true")
-parser.add_argument("--congress", action="store_true")
-parser.add_argument("--daily-summary", action="store_true")
-args = parser.parse_args()
-
-if args.weekly:
-    suggestions = weekly_new_stock_suggestions()
-    send_telegram(
-        f"WEEKLY STOCK PICKS\n"
-        f"{datetime.now().strftime('%d %b %Y')}\n\n"
-        f"3 new stocks to research this week:\n\n"
-        f"{suggestions}"
+You are a small cap stock analyst. The investor has 20 minutes to research before deciding.
+
+Answer in exactly this format:
+1. EVENT TYPE: What kind of catalyst is this? (geopolitical / IPO / sector boom / macro / FDA / contract / other)
+2. TOP 3 PLAYS: Specific stocks or ETFs with ticker symbols that could benefit most.
+   Prioritise small/mid cap with high upside. One sentence per pick explaining why.
+3. WHAT TO RESEARCH: The 2 most important things to check before investing.
+4. RISK: Biggest reason this play could go wrong. One sentence.
+5. WINDOW: How long does this opportunity likely last? (hours / days / weeks)
+6. CONFIDENCE: HIGH / MEDIUM / LOW — how sure are you about these plays?
+
+Be specific with tickers. No preamble.
+""",
+            }
+        ],
     )
-elif args.congress:
-    check_congress_trades()
-elif getattr(args, 'daily_summary', False):
-    send_daily_congress_summary()
-elif args.once:
-    check_news()
-    check_congress_trades()
-else:
-    schedule.every(30).minutes.do(check_news)
-    schedule.every(1).hours.do(check_congress_trades)
-    schedule.every().monday.at("08:00").do(weekly_suggestions)
-    schedule.every().day.at("18:00").do(send_daily_congress_summary)
-    check_news()
-    check_congress_trades()
-    while True:
-        schedule.run_pending()
-        time.sleep(30)
+    return msg.content[0].text
+
+
+def urgency_from_analysis(analysis: str) -> str:
+    """Extract urgency/confidence level from Claude's response."""
+    lower = analysis.lower()
+    # Check for explicit urgency/confidence markers
+    for high_marker in ["urgency: high", "confidence: high", "high urgency", "high confidence"]:
+        if high_marker in lower:
+            return "high"
+    for med_marker in ["urgency: medium", "confidence: medium", "medium urgency"]:
+        if med_marker in lower:
+            return "medium"
+    # Fallback: check first 300 chars for the word "high"
+    if "high" in lower[:300]:
+        return "high"
+    if "medium" in lower[:300]:
+        return "medium"
+    return "low"
+
+
+URGENCY_RANK = {"low": 0, "medium": 1, "high": 2}
+
+
+def urgency_emoji(level: str) -> str:
+    return {"high": "🔴", "medium": "🟡", "low": "🟢"}.get(level, "⚪")
+
+
+def format_portfolio_alert(title: str, analysis: str, link: str, urgency: str) -> str:
+    emoji = urgency_emoji(urgency)
+    timestamp = datetime.now().strftime("%d %b %Y %H:%M")
+    return (
+        f"{emoji} PORTFOLIO ALERT {emoji}\n"
+        f"{timestamp}\n\n"
+        f"NEWS: {title}\n\n"
+        f"YOUR HOLDINGS:\n{analysis}\n\n"
+        f"{link}"
+    )
+
+
+def format_opportunity_alert(title: str, analysis: str, link: str) -> str:
+    timestamp = datetime.now().strftime("%d %b %Y %H:%M")
+    return (
+        f"💰 OPPORTUNITY ALERT 💰\n"
+        f"{timestamp}\n\n"
+        f"NEWS: {title}\n\n"
+        f"STOCKS TO RESEARCH:\n{analysis}\n\n"
+        f"{link}"
+    )
+
+
+def check_news() -> None:
+    """Main news monitoring loop — runs every hour via GitHub Actions."""
+    log.info("Starting news check...")
+    articles = fetch_relevant_articles()
+
+    if not articles:
+        log.info("No new relevant articles found.")
+        return
+
+    log.info(f"Found {len(articles)} new article(s). Analysing...")
+    seen = load_seen_cache()
+    alerts_sent = 0
+
+    for article in articles:
+        title = article["title"]
+        log.info(f"Analysing: {title}")
+
+        try:
+            # --- Portfolio Alert ---
+            portfolio_analysis = analyse_portfolio_impact(title, article["summary"])
+            urgency = urgency_from_analysis(portfolio_analysis)
+
+            if URGENCY_RANK[urgency] >= URGENCY_RANK[config.MIN_URGENCY]:
+                alert = format_portfolio_alert(
+                    title, portfolio_analysis, article["link"], urgency
+                )
+                send_telegram(alert)
+                alerts_sent += 1
+                log.info(f"Portfolio alert sent [{urgency.upper()}]: {title}")
+            else:
+                log.info(f"Skipped (urgency={urgency}, min={config.MIN_URGENCY}): {title}")
+
+            time.sleep(1)
+
+            # --- Opportunity Alert (only if confidence is HIGH or MEDIUM) ---
+            opportunity_analysis = find_opportunity_plays(title, article["summary"])
+            opp_confidence = urgency_from_analysis(opportunity_analysis)
+
+            if opp_confidence in ["high", "medium"]:
+                opp_alert = format_opportunity_alert(
+                    title, opportunity_analysis, article["link"]
+                )
+                send_telegram(opp_alert)
+                alerts_sent += 1
+                log.info(f"Opportunity alert sent [{opp_confidence.upper()}]: {title}")
+            else:
+                log.info(f"Opportunity skipped (confidence={opp_confidence}): {title}")
+
+        except Exception as e:
+            log.error(f"Analysis failed for '{title}': {e}")
+
+        seen.add(article["id"])
+        time.sleep(2)  # Rate limit
+
+    save_seen_cache(seen)
+    log.info(f"News check complete. {alerts_sent} alert(s) sent.")
+
+
+# ============================================================
+# CONGRESSIONAL TRADING
+# ============================================================
+
+def check_congress_trades() -> None:
+    """
+    Fetch, score, and alert on high-signal congressional stock trades.
+    Runs hourly. Only sends alerts for trades scoring >= CONGRESS_SCORE_THRESHOLD.
+    """
+    log.info("Checking congressional trades...")
+
+    trades = get_all_recent_trades(lookback_days=2)  # Last 48h for hourly runs
+
+    if not trades:
+        log.info("No high-signal congressional trades found.")
+        return
+
+    for trade in trades:
+        alert = format_trade_alert(trade)
+        send_telegram(alert)
+        log.info(f"Congress alert sent: {trade['politician']} {trade['ticker']} (score: {trade['score']})")
+        time.sleep(1)
+
+
+def send_daily_congress_summary() -> None:
+    """
+    Daily 6pm summary of the strongest congressional trade signals.
+    Looks back 24 hours and summarises the top 5.
+    """
+    log.info("Sending daily congress summary...")
+
+    # Use threshold=0 to get ALL trades for the summary (we show top 5 regardless)
+    trades = get_all_recent_trades(lookback_days=1, score_threshold=5)
+    summary = format_daily_summary(trades)
+    send_telegram(summary)
+    log.info(f"Daily congress summary sent ({len(trades)} trades).")
+
+
+# ============================================================
+# WEEKLY STOCK PICKS
+# ============================================================
+
+def weekly_suggestions() -> None:
+    """
+    Monday 8am: Claude suggests 3 new stocks to research this week.
+    Based on macro conditions, sector trends, and your existing portfolio.
+    """
+    log.info("Generating weekly stock picks...")
+
+    if not config.CLAUDE_API_KEY:
+        log.warning("CLAUDE_API_KEY not set — skipping weekly picks")
+        return
+
+    client = anthropic.Anthropic(api_key=config.CLAUDE_API_KEY)
+
+    try:
+        msg = client.messages.create(
+            model=config.CLAUDE_MODEL,
+            max_tokens=config.MAX_WEEKLY_TOKENS,
+            messages=[
+                {
+                    "role": "user",
+                    "content": f"""
+Today is {datetime.now().strftime('%A %d %B %Y')}.
+
+My current portfolio:
+{config.PORTFOLIO}
+
+You are my personal AI stock analyst. Based on current macro conditions (April 2026),
+emerging tech trends, and gaps in my existing portfolio:
+
+Suggest 3 NEW stocks I don't already own that I should research this week.
+Focus on: small/mid cap with 3-10x potential over 1-3 years.
+
+For each pick, answer:
+TICKER: [symbol]
+COMPANY: [full name + one sentence what they do]
+WHY NOW: [specific catalyst happening in the next 30-90 days]
+UPSIDE: [realistic return range, e.g. 3-8x over 2 years]
+RISK: [biggest risk in one sentence]
+RESEARCH FIRST: [one specific thing to check before buying]
+
+Separate each pick with ---
+No preamble. Be direct and specific.
+""",
+                }
+            ],
+        )
+
+        picks = msg.content[0].text
+        timestamp = datetime.now().strftime("%d %b %Y")
+        message = (
+            f"📊 WEEKLY STOCK PICKS — {timestamp}\n\n"
+            f"3 new stocks to research this week:\n\n"
+            f"{picks}\n\n"
+            f"Remember: research before you invest. These are starting points."
+        )
+        send_telegram(message)
+        log.info("Weekly picks sent.")
+
+    except Exception as e:
+        log.error(f"Weekly picks failed: {e}")
+
+
+# ============================================================
+# TEST
+# ============================================================
+
+def run_test() -> None:
+    """Send a test message to confirm Telegram is working."""
+    timestamp = datetime.now().strftime("%d %b %Y %H:%M")
+    message = (
+        f"Investment Bot v2 — Online\n"
+        f"{timestamp}\n\n"
+        f"Systems check:\n"
+        f"• RSS feeds: {len(config.RSS_FEEDS)} sources\n"
+        f"• Portfolio: {len(config.YOUR_TICKERS)} holdings\n"
+        f"• Politicians watched: {len(config.WATCH_POLITICIANS)} names\n"
+        f"• Min urgency: {config.MIN_URGENCY.upper()}\n"
+        f"• Congress score threshold: {config.CONGRESS_SCORE_THRESHOLD}/10\n\n"
+        f"Alert types active:\n"
+        f"  PORTFOLIO — impact on your holdings\n"
+        f"  OPPORTUNITY — small cap plays\n"
+        f"  CONGRESS — politician stock trades\n"
+        f"  IPO — upcoming IPO alerts\n\n"
+        f"All systems operational."
+    )
+    ok = send_telegram(message)
+    if ok:
+        log.info("Test message sent successfully.")
+    else:
+        log.error("Test message failed — check TELEGRAM_TOKEN and TELEGRAM_CHAT_ID.")
+
+
+# ============================================================
+# MAIN
+# ============================================================
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="AI Investment Bot v2")
+    parser.add_argument(
+        "--mode",
+        choices=["news", "congress", "daily-summary", "weekly", "ipo", "test"],
+        default="news",
+        help="Which function to run",
+    )
+    args = parser.parse_args()
+
+    # Validate API key for modes that need Claude
+    needs_claude = args.mode in ["news", "weekly", "ipo"]
+    if needs_claude and not config.CLAUDE_API_KEY:
+        log.error("CLAUDE_API_KEY is not set. Set it as a GitHub Secret.")
+        return
+
+    mode_map = {
+        "news": check_news,
+        "congress": check_congress_trades,
+        "daily-summary": send_daily_congress_summary,
+        "weekly": weekly_suggestions,
+        "ipo": lambda: check_ipos(send_fn=send_telegram),
+        "test": run_test,
+    }
+
+    log.info(f"Running mode: {args.mode}")
+    mode_map[args.mode]()
+
+
+if __name__ == "__main__":
+    main()
