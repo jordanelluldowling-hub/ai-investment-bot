@@ -23,8 +23,9 @@ import argparse
 import hashlib
 import json
 import logging
+import re
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import anthropic
@@ -326,6 +327,269 @@ def format_buy_signal_alert(title: str, analysis: str, link: str, score: int) ->
     )
 
 
+# ============================================================
+# TICKER EXTRACTION
+# ============================================================
+
+# Words that look like tickers but aren't
+_NON_TICKERS = {
+    "AT", "BE", "BY", "DO", "GO", "IF", "IN", "IS", "IT", "ME",
+    "MY", "NO", "OF", "ON", "OR", "SO", "TO", "UP", "US", "WE",
+    "AND", "BUT", "FOR", "NOT", "THE", "WHO", "WHY", "CEO", "CFO",
+    "IPO", "ETF", "USA", "GDP", "CPI", "FDA", "SEC", "OTC",
+    "GAS", "EPS", "RSI", "ATH", "DCA", "BUY", "SELL", "HIGH",
+    "LOW", "HOLD", "NEWS", "RATE", "TOP", "KEY", "NEW", "NOW",
+    "GET", "SET", "YES", "NAV", "TAX", "ESG", "OIL", "LNG",
+}
+
+
+def extract_tickers(text: str) -> list[str]:
+    """Extract likely stock ticker symbols from Claude's analysis text."""
+    candidates = re.findall(r'\b([A-Z]{2,5})\b', text)
+    seen = set()
+    result = []
+    for t in candidates:
+        if t not in _NON_TICKERS and t not in seen:
+            seen.add(t)
+            result.append(t)
+    return result[:6]  # Cap at 6 tickers per alert
+
+
+# ============================================================
+# SECOND-OPINION QUALITY GATE
+# ============================================================
+
+def review_opportunity(title: str, analysis: str) -> tuple[bool, int]:
+    """
+    Second Claude call that acts as a strict quality controller.
+    Reviews the opportunity analysis and scores it 0-100.
+    Only returns True (send) if score >= 70.
+
+    This prevents Claude from marking its own homework.
+    """
+    if not config.CLAUDE_API_KEY:
+        return True, 75  # If no key, allow through
+
+    client = anthropic.Anthropic(api_key=config.CLAUDE_API_KEY)
+    try:
+        msg = client.messages.create(
+            model=config.CLAUDE_MODEL,
+            max_tokens=150,
+            messages=[{
+                "role": "user",
+                "content": f"""You are a strict investment alert quality controller.
+
+NEWS: {title}
+
+OPPORTUNITY ANALYSIS TO REVIEW:
+{analysis}
+
+Score this analysis 0-100 based on:
++ Specific named tickers with clear reasoning (+30)
++ Genuine, significant catalyst with real edge (+25)
++ Clear opportunity window that isn't already priced in (+25)
++ Realistic risk/reward (+20)
+
+Deduct heavily for: vague tickers, obvious/already-known plays,
+generic analysis, poor risk/reward, no clear edge.
+
+Answer in exactly 2 lines:
+SCORE: [0-100]
+DECISION: [SEND / SKIP]""",
+            }],
+        )
+        raw = msg.content[0].text
+        score = 50
+        decision = "SKIP"
+        for line in raw.splitlines():
+            if line.startswith("SCORE:"):
+                try:
+                    score = int(line.split(":", 1)[1].strip().split()[0])
+                except (ValueError, IndexError):
+                    pass
+            if line.startswith("DECISION:"):
+                decision = line.split(":", 1)[1].strip().upper()
+
+        should_send = decision == "SEND" and score >= 70
+        log.info(f"Opportunity review: score={score}, decision={decision}")
+        return should_send, score
+
+    except Exception as e:
+        log.error(f"Opportunity review failed: {e}")
+        return True, 75  # On error, allow through
+
+
+# ============================================================
+# TICKER DEDUPLICATION
+# ============================================================
+
+def was_recently_alerted(tickers: list[str], hours: int = 48) -> list[str]:
+    """
+    Returns list of tickers that were already alerted in the last N hours.
+    Empty list means none were recently alerted (safe to send).
+    """
+    from tracker import load_alerts
+    cutoff = datetime.now() - timedelta(hours=hours)
+    recent_alerts = load_alerts()
+    recent_tickers: set[str] = set()
+
+    for alert in recent_alerts:
+        try:
+            sent_at = datetime.fromisoformat(alert.get("sent_at", ""))
+            if sent_at >= cutoff:
+                for t in alert.get("tickers", []):
+                    recent_tickers.add(t.upper())
+        except (ValueError, KeyError):
+            continue
+
+    return [t for t in tickers if t.upper() in recent_tickers]
+
+
+# ============================================================
+# CONVERGENCE DETECTOR — TRIPLE SIGNAL
+# ============================================================
+
+def get_recent_alert_types_for_tickers(tickers: list[str], days: int = 3) -> dict[str, set]:
+    """
+    For each ticker, return which alert types have fired in the last N days.
+    e.g. {"NVDA": {"congress", "buy_signal"}}
+    """
+    from tracker import load_alerts
+    cutoff = datetime.now() - timedelta(days=days)
+    all_alerts = load_alerts()
+    ticker_types: dict[str, set] = {}
+
+    for alert in all_alerts:
+        try:
+            sent_at = datetime.fromisoformat(alert.get("sent_at", ""))
+            if sent_at < cutoff:
+                continue
+            atype = alert.get("type", "")
+            for t in alert.get("tickers", []):
+                t = t.upper()
+                if t not in ticker_types:
+                    ticker_types[t] = set()
+                ticker_types[t].add(atype)
+        except (ValueError, KeyError):
+            continue
+
+    return ticker_types
+
+
+def format_convergence_alert(ticker: str, alert_types: set, headlines: list[str]) -> str:
+    """Format a convergence (triple signal) alert — the strongest possible signal."""
+    timestamp = datetime.now().strftime("%d %b %Y %H:%M")
+    types_str = " + ".join(t.replace("_", " ").upper() for t in sorted(alert_types))
+    headlines_str = "\n".join(f"  • {h[:100]}" for h in headlines[:3])
+
+    return (
+        f"🔥 CONVERGENCE ALERT — TRIPLE SIGNAL 🔥\n"
+        f"{timestamp}\n\n"
+        f"TICKER: {ticker}\n"
+        f"SIGNALS ALIGNED: {types_str}\n\n"
+        f"WHAT THIS MEANS: Multiple independent sources are all\n"
+        f"flagging {ticker} at the same time. This is the strongest\n"
+        f"possible signal the bot can generate.\n\n"
+        f"RECENT TRIGGERS:\n{headlines_str}\n\n"
+        f"ACTION: Research {ticker} immediately — check price, news,\n"
+        f"congressional activity, and fundamentals before acting."
+    )
+
+
+def check_and_send_convergence(tickers: list[str], alert_type: str, headline: str) -> None:
+    """
+    After any alert fires, check if this creates a convergence (3+ alert types
+    on the same ticker). If so, send a special TRIPLE SIGNAL alert.
+    """
+    ticker_types = get_recent_alert_types_for_tickers(tickers, days=3)
+
+    for ticker in tickers:
+        types_seen = ticker_types.get(ticker.upper(), set())
+        types_seen = types_seen | {alert_type}  # Include the current one
+
+        if len(types_seen) >= 3:
+            log.info(f"CONVERGENCE on {ticker}: {types_seen}")
+            # Collect recent headlines for this ticker
+            from tracker import load_alerts
+            cutoff = datetime.now() - timedelta(days=3)
+            headlines = [
+                a.get("headline", "")
+                for a in load_alerts()
+                if ticker.upper() in [t.upper() for t in a.get("tickers", [])]
+                and datetime.fromisoformat(a.get("sent_at", "2000-01-01")) >= cutoff
+            ]
+            headlines.append(headline)
+
+            alert = format_convergence_alert(ticker, types_seen, headlines)
+            send_telegram(alert)
+            record_alert(
+                alert_type="convergence",
+                headline=f"TRIPLE SIGNAL on {ticker}",
+                analysis=alert,
+                tickers=[ticker],
+                score=10,
+                confidence="high",
+            )
+            break  # One convergence alert per check is enough
+
+
+# ============================================================
+# MORNING BRIEFING
+# ============================================================
+
+def morning_briefing() -> None:
+    """
+    Daily 8am (Mon-Sat): top 3 signals from the past 24 hours.
+    Gives a quick 'what to watch today' summary.
+    """
+    from tracker import load_alerts
+    log.info("Generating morning briefing...")
+
+    cutoff = datetime.now() - timedelta(hours=24)
+    recent = [
+        a for a in load_alerts()
+        if datetime.fromisoformat(a.get("sent_at", "2000-01-01")) >= cutoff
+    ]
+
+    if not recent:
+        send_telegram(
+            f"☀️ MORNING BRIEFING — {datetime.now().strftime('%d %b %Y')}\n\n"
+            f"No high-signal alerts in the last 24 hours.\n"
+            f"Markets are quiet — stay patient."
+        )
+        return
+
+    # Sort by score descending, take top 5
+    scored = sorted(
+        recent,
+        key=lambda a: (a.get("score") or 0),
+        reverse=True,
+    )[:5]
+
+    lines = [f"☀️ MORNING BRIEFING — {datetime.now().strftime('%d %b %Y')}\n"]
+    lines.append("Top signals from the last 24 hours:\n")
+
+    for i, alert in enumerate(scored, 1):
+        atype = alert.get("type", "?").replace("_", " ").upper()
+        tickers = ", ".join(alert.get("tickers", [])[:3]) or "?"
+        score = alert.get("score")
+        score_str = f" | Score {score}/10" if score else ""
+        headline = alert.get("headline", "")[:80]
+        lines.append(f"{i}. {atype} | {tickers}{score_str}")
+        lines.append(f"   {headline}")
+
+    # Watchlist for today
+    all_tickers = []
+    for a in scored:
+        all_tickers.extend(a.get("tickers", []))
+    watchlist = list(dict.fromkeys(all_tickers))[:6]  # Unique, ordered, max 6
+    if watchlist:
+        lines.append(f"\nWATCH TODAY: {' | '.join(watchlist)}")
+
+    send_telegram("\n".join(lines))
+    log.info("Morning briefing sent.")
+
+
 def check_news() -> None:
     """Main news monitoring loop — runs every hour via GitHub Actions."""
     log.info("Starting news check...")
@@ -367,23 +631,42 @@ def check_news() -> None:
 
             time.sleep(1)
 
-            # --- Opportunity Alert (only if confidence is HIGH or MEDIUM) ---
+            # --- Opportunity Alert ---
+            # Step 1: Generate analysis
             opportunity_analysis = find_opportunity_plays(title, article["summary"])
             opp_confidence = urgency_from_analysis(opportunity_analysis)
 
             if opp_confidence in ["high", "medium"]:
-                opp_alert = format_opportunity_alert(
-                    title, opportunity_analysis, article["link"]
-                )
-                send_telegram(opp_alert)
-                alerts_sent += 1
-                record_alert(
-                    alert_type="opportunity",
-                    headline=title,
-                    analysis=opportunity_analysis,
-                    confidence=opp_confidence,
-                )
-                log.info(f"Opportunity alert sent [{opp_confidence.upper()}]: {title}")
+                # Step 2: Extract tickers for deduplication + convergence check
+                opp_tickers = extract_tickers(opportunity_analysis)
+
+                # Step 3: Deduplication — skip if same tickers alerted in last 48h
+                recent_dupes = was_recently_alerted(opp_tickers, hours=48)
+                if recent_dupes:
+                    log.info(f"Opportunity skipped — tickers {recent_dupes} already alerted in last 48h")
+                else:
+                    # Step 4: Second-opinion quality gate
+                    should_send, review_score = review_opportunity(title, opportunity_analysis)
+
+                    if should_send:
+                        opp_alert = format_opportunity_alert(
+                            title, opportunity_analysis, article["link"]
+                        )
+                        send_telegram(opp_alert)
+                        alerts_sent += 1
+                        record_alert(
+                            alert_type="opportunity",
+                            headline=title,
+                            analysis=opportunity_analysis,
+                            tickers=opp_tickers,
+                            score=review_score // 10,  # Convert 0-100 to 0-10
+                            confidence=opp_confidence,
+                        )
+                        log.info(f"Opportunity sent [score={review_score}]: {title}")
+                        # Step 5: Check for convergence (triple signal)
+                        check_and_send_convergence(opp_tickers, "opportunity", title)
+                    else:
+                        log.info(f"Opportunity blocked by quality gate (score={review_score}): {title}")
             else:
                 log.info(f"Opportunity skipped (confidence={opp_confidence}): {title}")
 
@@ -396,6 +679,7 @@ def check_news() -> None:
                 catalyst_score = extract_catalyst_score(catalyst_analysis)
 
                 if catalyst_score >= config.BUY_SIGNAL_THRESHOLD:
+                    buy_tickers = extract_tickers(catalyst_analysis)
                     buy_alert = format_buy_signal_alert(
                         title, catalyst_analysis, article["link"], catalyst_score
                     )
@@ -405,10 +689,13 @@ def check_news() -> None:
                         alert_type="buy_signal",
                         headline=title,
                         analysis=catalyst_analysis,
+                        tickers=buy_tickers,
                         score=catalyst_score,
                         confidence="high" if catalyst_score >= 9 else "medium",
                     )
                     log.info(f"Buy signal sent (score {catalyst_score}/10): {title}")
+                    # Check for convergence
+                    check_and_send_convergence(buy_tickers, "buy_signal", title)
                 else:
                     log.info(f"Buy catalyst scored {catalyst_score}/10 — below threshold, skipped")
 
@@ -445,15 +732,21 @@ def check_congress_trades() -> None:
         claude_analysis = analyse_trade_with_claude(trade)
         alert = format_trade_alert(trade, claude_analysis)
         send_telegram(alert)
+        congress_tickers = [trade["ticker"]] if trade.get("ticker") else []
         record_alert(
             alert_type="congress",
             headline=f"{trade['politician']} — {trade.get('trade_type','').upper()} {trade['ticker']}",
             analysis=claude_analysis,
-            tickers=[trade["ticker"]] if trade.get("ticker") else [],
+            tickers=congress_tickers,
             score=trade.get("score"),
             politician=trade.get("politician"),
         )
         log.info(f"Congress alert sent: {trade['politician']} {trade['ticker']} (score: {trade['score']})")
+        # Check for convergence with recent news/buy signals
+        check_and_send_convergence(
+            congress_tickers, "congress",
+            f"{trade['politician']} traded {trade['ticker']}"
+        )
         time.sleep(2)
 
 
@@ -580,7 +873,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="AI Investment Bot v2")
     parser.add_argument(
         "--mode",
-        choices=["news", "congress", "daily-summary", "weekly", "ipo", "test"],
+        choices=["news", "congress", "daily-summary", "weekly", "ipo", "morning", "test"],
         default="news",
         help="Which function to run",
     )
@@ -598,6 +891,7 @@ def main() -> None:
         "daily-summary": send_daily_congress_summary,
         "weekly": weekly_suggestions,
         "ipo": lambda: check_ipos(send_fn=send_telegram),
+        "morning": morning_briefing,
         "test": run_test,
     }
 

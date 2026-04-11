@@ -4,12 +4,12 @@ on:
   schedule:
     # News check — every hour
     - cron: '0 * * * *'
+    # Morning briefing — every day at 8am UTC
+    - cron: '0 8 * * *'
     # IPO check — every day at 7am UTC
     - cron: '0 7 * * *'
     # Daily congressional summary — every day at 6pm UTC
     - cron: '0 18 * * *'
-    # Weekly stock picks — every Monday at 8am UTC
-    - cron: '0 8 * * 1'
     # Weekly performance report — every Sunday at 9am UTC
     - cron: '0 9 * * 0'
 
@@ -27,6 +27,7 @@ on:
           - daily-summary
           - weekly
           - ipo
+          - morning
           - performance
           - test
 
@@ -74,9 +75,12 @@ jobs:
             # Sunday 9am → weekly performance report
             if [ "$DOW" = "7" ] && [ "$HOUR" = "09" ]; then
               echo "MODE=performance" >> $GITHUB_OUTPUT
-            # Monday 8am → weekly picks
+            # Monday 8am → weekly picks (takes priority over morning briefing)
             elif [ "$DOW" = "1" ] && [ "$HOUR" = "08" ]; then
               echo "MODE=weekly" >> $GITHUB_OUTPUT
+            # Every day 8am (Tue-Sat) → morning briefing
+            elif [ "$HOUR" = "08" ]; then
+              echo "MODE=morning" >> $GITHUB_OUTPUT
             # Every day 6pm → daily congress summary
             elif [ "$HOUR" = "18" ]; then
               echo "MODE=daily-summary" >> $GITHUB_OUTPUT
@@ -129,6 +133,13 @@ jobs:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: python bot.py --mode ipo
+
+      - name: Run morning briefing
+        if: steps.mode.outputs.MODE == 'morning'
+        env:
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: python bot.py --mode morning
 
       - name: Run weekly performance report
         if: steps.mode.outputs.MODE == 'performance'
