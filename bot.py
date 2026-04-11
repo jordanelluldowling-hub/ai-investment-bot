@@ -250,6 +250,79 @@ def format_opportunity_alert(title: str, analysis: str, link: str) -> str:
     )
 
 
+# ============================================================
+# BUY SIGNAL DETECTOR
+# ============================================================
+
+def is_buy_catalyst(title: str, summary: str) -> bool:
+    """Check if an article describes a positive company event (buy signal candidate)."""
+    text = (title + " " + summary).lower()
+    return any(kw.lower() in text for kw in config.BUY_CATALYST_KEYWORDS)
+
+
+def analyse_buy_catalyst(title: str, summary: str) -> str:
+    """
+    Use Claude to analyse a positive company event and rate it as a buy signal.
+    Returns structured analysis with catalyst strength score 1-10.
+    """
+    client = anthropic.Anthropic(api_key=config.CLAUDE_API_KEY)
+    msg = client.messages.create(
+        model=config.CLAUDE_MODEL,
+        max_tokens=config.MAX_RESPONSE_TOKENS,
+        messages=[
+            {
+                "role": "user",
+                "content": f"""
+A company just announced something significant:
+
+HEADLINE: {title}
+DETAILS: {summary}
+
+Analyse this as a potential BUY SIGNAL for an investor.
+
+Answer in exactly this format:
+CATALYST TYPE: [Patent / FDA Approval / Government Contract / Partnership / Earnings Beat / Product Launch / Funding Round / Expansion / Acquisition / Other]
+COMPANY: [Company name and ticker symbol if identifiable]
+STRENGTH: [Score 1-10 — how significant is this event? 10 = rare, company-changing. 7+ = strong buy signal]
+WHY BUY: [One sentence — why does this make the stock worth buying now?]
+UPSIDE: [Realistic gain range, e.g. +20% to +60% over 3-6 months]
+TIME TO ACT: [hours / days / weeks — how quickly should an investor research this?]
+RISK: [One sentence — biggest reason this might not play out]
+ACTION: [BUY NOW / BUY ON DIP / ADD TO WATCHLIST / SKIP]
+
+Only score 7-10 if this is a genuine major event. Be direct. No preamble.
+""",
+            }
+        ],
+    )
+    return msg.content[0].text
+
+
+def extract_catalyst_score(analysis: str) -> int:
+    """Parse the STRENGTH score from Claude's buy catalyst analysis."""
+    for line in analysis.splitlines():
+        if line.upper().startswith("STRENGTH:"):
+            try:
+                value = line.split(":", 1)[1].strip().split()[0]
+                return int(value.split("/")[0])
+            except (ValueError, IndexError):
+                pass
+    return 5  # Default mid-score if parsing fails
+
+
+def format_buy_signal_alert(title: str, analysis: str, link: str, score: int) -> str:
+    timestamp = datetime.now().strftime("%d %b %Y %H:%M")
+    stars = "⭐" * min(score // 2, 5)
+    return (
+        f"🚀 BUY SIGNAL {stars}\n"
+        f"Catalyst strength: {score}/10\n"
+        f"{timestamp}\n\n"
+        f"EVENT: {title}\n\n"
+        f"{analysis}\n\n"
+        f"{link}"
+    )
+
+
 def check_news() -> None:
     """Main news monitoring loop — runs every hour via GitHub Actions."""
     log.info("Starting news check...")
@@ -297,6 +370,24 @@ def check_news() -> None:
                 log.info(f"Opportunity alert sent [{opp_confidence.upper()}]: {title}")
             else:
                 log.info(f"Opportunity skipped (confidence={opp_confidence}): {title}")
+
+            time.sleep(1)
+
+            # --- Buy Signal Alert (positive company catalyst detected) ---
+            if is_buy_catalyst(title, article["summary"]):
+                log.info(f"Buy catalyst detected — analysing: {title}")
+                catalyst_analysis = analyse_buy_catalyst(title, article["summary"])
+                catalyst_score = extract_catalyst_score(catalyst_analysis)
+
+                if catalyst_score >= config.BUY_SIGNAL_THRESHOLD:
+                    buy_alert = format_buy_signal_alert(
+                        title, catalyst_analysis, article["link"], catalyst_score
+                    )
+                    send_telegram(buy_alert)
+                    alerts_sent += 1
+                    log.info(f"Buy signal sent (score {catalyst_score}/10): {title}")
+                else:
+                    log.info(f"Buy catalyst scored {catalyst_score}/10 — below threshold, skipped")
 
         except Exception as e:
             log.error(f"Analysis failed for '{title}': {e}")
@@ -431,6 +522,7 @@ def run_test() -> None:
         f"Alert types active:\n"
         f"  PORTFOLIO — impact on your holdings\n"
         f"  OPPORTUNITY — small cap plays\n"
+        f"  BUY SIGNAL — company positive catalysts\n"
         f"  CONGRESS — politician stock trades\n"
         f"  IPO — upcoming IPO alerts\n\n"
         f"All systems operational."

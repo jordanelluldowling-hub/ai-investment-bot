@@ -190,7 +190,58 @@ TRIGGER_KEYWORDS = [
     # Commodities & supply chain
     "wheat", "food crisis", "drought", "supply chain",
     "shipping", "port strike",
+    # Positive company catalysts (buy signals)
+    "patent granted", "patent approved", "new patent",
+    "contract awarded", "contract won", "wins contract",
+    "partnership signed", "signs deal", "new deal",
+    "product launch", "launches new", "unveils",
+    "breakthrough", "record revenue", "record sales",
+    "beats estimates", "raises guidance", "raised outlook",
+    "FDA approved", "FDA clears", "regulatory approval",
+    "phase 3", "clinical success", "trial success",
+    "expansion", "enters new market", "new facility",
+    "Series C", "Series D", "raises funding",
 ]
+
+# --- Buy Signal Catalyst Keywords ---
+# These specifically indicate a POSITIVE company event = potential buy trigger.
+# Any article matching these gets a dedicated BUY SIGNAL analysis.
+BUY_CATALYST_KEYWORDS = [
+    # Patents & IP
+    "patent granted", "patent approved", "new patent", "patent awarded",
+    "intellectual property", "exclusive license",
+    # Government & defense contracts
+    "contract awarded", "contract won", "wins contract", "selected for contract",
+    "DoD contract", "military contract", "government contract", "NASA contract",
+    "awarded $", "contract worth",
+    # FDA & pharma approvals
+    "FDA approved", "FDA approval", "FDA clears", "FDA grants",
+    "breakthrough therapy", "fast track designation",
+    "phase 3 success", "clinical trial success", "trial results positive",
+    "regulatory approval", "drug approved",
+    # Partnerships & deals
+    "strategic partnership", "partnership signed", "signs deal",
+    "joint venture", "licensing agreement", "collaboration agreement",
+    "exclusive agreement", "multi-year deal",
+    # Product & technology launches
+    "product launch", "launches new", "unveils", "introduces",
+    "technology breakthrough", "major announcement", "new invention",
+    "world first", "industry first",
+    # Earnings & financial beats
+    "earnings beat", "beats estimates", "beats expectations",
+    "raises guidance", "raised outlook", "revenue record",
+    "record revenue", "record sales", "record profit",
+    "guidance raised", "above consensus",
+    # Funding & investment
+    "Series C", "Series D", "Series E", "raises $", "raises funding",
+    "secured funding", "investment round",
+    # Expansion
+    "expansion into", "enters new market", "new facility",
+    "acquires", "acquisition of", "buys out",
+]
+
+# Minimum catalyst strength to send a Buy Signal alert (1-10)
+BUY_SIGNAL_THRESHOLD = 7
 
 # --- Bot Behaviour ---
 CHECK_INTERVAL_MINUTES = 30
