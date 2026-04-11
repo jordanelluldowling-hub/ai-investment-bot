@@ -36,6 +36,8 @@ from congress_tracker import (
     get_all_recent_trades,
     format_trade_alert,
     format_daily_summary,
+    analyse_trade_with_claude,
+    analyse_daily_trades_with_claude,
 )
 from ipo_tracker import check_ipos
 
@@ -417,10 +419,13 @@ def check_congress_trades() -> None:
         return
 
     for trade in trades:
-        alert = format_trade_alert(trade)
+        # Ask Claude to interpret the trade before sending
+        log.info(f"Analysing trade with Claude: {trade['politician']} {trade['ticker']}")
+        claude_analysis = analyse_trade_with_claude(trade)
+        alert = format_trade_alert(trade, claude_analysis)
         send_telegram(alert)
         log.info(f"Congress alert sent: {trade['politician']} {trade['ticker']} (score: {trade['score']})")
-        time.sleep(1)
+        time.sleep(2)
 
 
 def send_daily_congress_summary() -> None:
@@ -430,9 +435,13 @@ def send_daily_congress_summary() -> None:
     """
     log.info("Sending daily congress summary...")
 
-    # Use threshold=0 to get ALL trades for the summary (we show top 5 regardless)
+    # Use threshold=5 to get meaningful trades for the summary
     trades = get_all_recent_trades(lookback_days=1, score_threshold=5)
-    summary = format_daily_summary(trades)
+
+    # Ask Claude to identify patterns across all today's trades
+    claude_pattern = analyse_daily_trades_with_claude(trades) if trades else ""
+
+    summary = format_daily_summary(trades, claude_pattern)
     send_telegram(summary)
     log.info(f"Daily congress summary sent ({len(trades)} trades).")
 
