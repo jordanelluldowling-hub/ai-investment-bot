@@ -226,6 +226,18 @@ def check_ipos(send_fn=None, score_threshold: int = 65) -> list[dict]:
             if send_fn:
                 alert = format_ipo_alert(scored)
                 send_fn(alert)
+                # Record in tracker
+                try:
+                    from tracker import record_alert
+                    record_alert(
+                        alert_type="ipo",
+                        headline=ipo["title"],
+                        analysis=scored.get("analysis", ""),
+                        score=scored["score"],
+                        confidence="high" if scored["score"] >= 80 else "medium",
+                    )
+                except Exception:
+                    pass
                 log.info(f"IPO alert sent: {ipo['title']} (score: {scored['score']})")
 
     save_ipo_cache(seen)

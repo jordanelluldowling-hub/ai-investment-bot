@@ -40,6 +40,7 @@ from congress_tracker import (
     analyse_daily_trades_with_claude,
 )
 from ipo_tracker import check_ipos
+from tracker import record_alert
 
 # --- Logging ---
 logging.basicConfig(
@@ -353,6 +354,13 @@ def check_news() -> None:
                 )
                 send_telegram(alert)
                 alerts_sent += 1
+                record_alert(
+                    alert_type="portfolio",
+                    headline=title,
+                    analysis=portfolio_analysis,
+                    tickers=config.YOUR_TICKERS,
+                    confidence=urgency,
+                )
                 log.info(f"Portfolio alert sent [{urgency.upper()}]: {title}")
             else:
                 log.info(f"Skipped (urgency={urgency}, min={config.MIN_URGENCY}): {title}")
@@ -369,6 +377,12 @@ def check_news() -> None:
                 )
                 send_telegram(opp_alert)
                 alerts_sent += 1
+                record_alert(
+                    alert_type="opportunity",
+                    headline=title,
+                    analysis=opportunity_analysis,
+                    confidence=opp_confidence,
+                )
                 log.info(f"Opportunity alert sent [{opp_confidence.upper()}]: {title}")
             else:
                 log.info(f"Opportunity skipped (confidence={opp_confidence}): {title}")
@@ -387,6 +401,13 @@ def check_news() -> None:
                     )
                     send_telegram(buy_alert)
                     alerts_sent += 1
+                    record_alert(
+                        alert_type="buy_signal",
+                        headline=title,
+                        analysis=catalyst_analysis,
+                        score=catalyst_score,
+                        confidence="high" if catalyst_score >= 9 else "medium",
+                    )
                     log.info(f"Buy signal sent (score {catalyst_score}/10): {title}")
                 else:
                     log.info(f"Buy catalyst scored {catalyst_score}/10 — below threshold, skipped")
@@ -424,6 +445,14 @@ def check_congress_trades() -> None:
         claude_analysis = analyse_trade_with_claude(trade)
         alert = format_trade_alert(trade, claude_analysis)
         send_telegram(alert)
+        record_alert(
+            alert_type="congress",
+            headline=f"{trade['politician']} — {trade.get('trade_type','').upper()} {trade['ticker']}",
+            analysis=claude_analysis,
+            tickers=[trade["ticker"]] if trade.get("ticker") else [],
+            score=trade.get("score"),
+            politician=trade.get("politician"),
+        )
         log.info(f"Congress alert sent: {trade['politician']} {trade['ticker']} (score: {trade['score']})")
         time.sleep(2)
 
