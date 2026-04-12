@@ -4,12 +4,22 @@ on:
   schedule:
     # News check — every hour
     - cron: '0 * * * *'
+    # Morning briefing — every day at 8am UTC
+    - cron: '0 8 * * *'
     # IPO check — every day at 7am UTC
     - cron: '0 7 * * *'
     # Daily congressional summary — every day at 6pm UTC
     - cron: '0 18 * * *'
-    # Weekly stock picks — every Monday at 8am UTC
-    - cron: '0 8 * * 1'
+    # Weekly performance report — every Sunday at 9am UTC
+    - cron: '0 9 * * 0'
+    # Sentiment check — every 3 hours
+    - cron: '0 */3 * * *'
+    # Batch submit — midnight UTC (queue all day's Tier 3 articles to Batch API)
+    - cron: '0 0 * * *'
+    # Batch retrieve — 2am UTC (collect overnight results)
+    - cron: '0 2 * * *'
+    # Moonshot scan — Sunday 6pm UTC (after US market close, uses extended thinking)
+    - cron: '0 18 * * 0'
 
   # Allow manual trigger with mode selection
   workflow_dispatch:
@@ -25,16 +35,27 @@ on:
           - daily-summary
           - weekly
           - ipo
+          - morning
+          - performance
+          - sentiment
+          - batch-submit
+          - batch-retrieve
+          - moonshot
           - test
 
 jobs:
   run-bot:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
+    # Allow writing back to repo (for alert history)
+    permissions:
+      contents: write
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Set up Python 3.11
         uses: actions/setup-python@v5
@@ -45,6 +66,15 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
+      # ---- Restore alert history from previous run ----
+      - name: Restore alert history cache
+        uses: actions/cache@v4
+        with:
+          path: data/
+          key: alert-data-${{ github.ref_name }}
+          restore-keys: |
+            alert-data-
+
       # ---- Determine mode for scheduled runs ----
       - name: Determine run mode
         id: mode
@@ -53,16 +83,34 @@ jobs:
             echo "MODE=${{ github.event.inputs.mode }}" >> $GITHUB_OUTPUT
           else
             HOUR=$(date -u +%H)
-            DOW=$(date -u +%u)   # 1=Monday
-            # Monday 8am → weekly picks
-            if [ "$DOW" = "1" ] && [ "$HOUR" = "08" ]; then
+            DOW=$(date -u +%u)   # 1=Monday, 7=Sunday
+            # Sunday 9am → weekly performance report
+            if [ "$DOW" = "7" ] && [ "$HOUR" = "09" ]; then
+              echo "MODE=performance" >> $GITHUB_OUTPUT
+            # Sunday 6pm → moonshot scan (extended thinking deep analysis)
+            elif [ "$DOW" = "7" ] && [ "$HOUR" = "18" ]; then
+              echo "MODE=moonshot" >> $GITHUB_OUTPUT
+            # Monday 8am → weekly picks (takes priority over morning briefing)
+            elif [ "$DOW" = "1" ] && [ "$HOUR" = "08" ]; then
               echo "MODE=weekly" >> $GITHUB_OUTPUT
-            # Every day 6pm → daily congress summary
+            # Every day 8am (Tue-Sat) → morning briefing
+            elif [ "$HOUR" = "08" ]; then
+              echo "MODE=morning" >> $GITHUB_OUTPUT
+            # Every day 6pm (non-Sunday) → daily congress summary
             elif [ "$HOUR" = "18" ]; then
               echo "MODE=daily-summary" >> $GITHUB_OUTPUT
             # Every day 7am → IPO check
             elif [ "$HOUR" = "07" ]; then
               echo "MODE=ipo" >> $GITHUB_OUTPUT
+            # Midnight → submit batch
+            elif [ "$HOUR" = "00" ]; then
+              echo "MODE=batch-submit" >> $GITHUB_OUTPUT
+            # 2am → retrieve batch results
+            elif [ "$HOUR" = "02" ]; then
+              echo "MODE=batch-retrieve" >> $GITHUB_OUTPUT
+            # Every 3 hours (3,6,9,12,15,21) not already handled → sentiment check
+            elif [ $((10#$HOUR % 3)) -eq 0 ]; then
+              echo "MODE=sentiment" >> $GITHUB_OUTPUT
             # All other hours → news + congress check
             else
               echo "MODE=news" >> $GITHUB_OUTPUT
@@ -110,6 +158,52 @@ jobs:
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: python bot.py --mode ipo
 
+      - name: Run morning briefing
+        if: steps.mode.outputs.MODE == 'morning'
+        env:
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: python bot.py --mode morning
+
+      - name: Run weekly performance report
+        if: steps.mode.outputs.MODE == 'performance'
+        env:
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: python performance.py --send
+
+      - name: Run sentiment check
+        if: steps.mode.outputs.MODE == 'sentiment'
+        env:
+          CLAUDE_API_KEY: ${{ secrets.CLAUDE_API_KEY }}
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: python bot.py --mode sentiment
+
+      - name: Submit batch
+        if: steps.mode.outputs.MODE == 'batch-submit'
+        env:
+          CLAUDE_API_KEY: ${{ secrets.CLAUDE_API_KEY }}
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: python bot.py --mode batch-submit
+
+      - name: Retrieve batch results
+        if: steps.mode.outputs.MODE == 'batch-retrieve'
+        env:
+          CLAUDE_API_KEY: ${{ secrets.CLAUDE_API_KEY }}
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: python bot.py --mode batch-retrieve
+
+      - name: Run moonshot scan
+        if: steps.mode.outputs.MODE == 'moonshot'
+        env:
+          CLAUDE_API_KEY: ${{ secrets.CLAUDE_API_KEY }}
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: python bot.py --mode moonshot
+
       - name: Run test
         if: steps.mode.outputs.MODE == 'test'
         env:
@@ -117,3 +211,11 @@ jobs:
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           CLAUDE_API_KEY: ${{ secrets.CLAUDE_API_KEY }}
         run: python bot.py --mode test
+
+      # ---- Save alert history for next run ----
+      - name: Save alert history cache
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: data/
+          key: alert-data-${{ github.ref_name }}-${{ github.run_id }}
