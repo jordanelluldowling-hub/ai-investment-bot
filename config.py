@@ -100,6 +100,40 @@ WATCH_POLITICIANS = [
 # Only alert on trades scoring >= 7 out of 10
 CONGRESS_SCORE_THRESHOLD = 7
 
+# --- News Source Quality Tiers ---
+# Tier 1 = most reliable, fact-checked institutional sources
+# Tier 2 = good but sometimes opinion/community driven
+# Tier 3 = useful for early signals but higher noise ratio
+#
+# Effect on alerts:
+#   Tier 1 article + MEDIUM confidence → sends portfolio alert
+#   Tier 2 article + HIGH confidence only → sends portfolio alert
+#   Tier 3 article → goes to batch queue for overnight review (not immediate)
+SOURCE_QUALITY = {
+    "feeds.reuters.com": 1,
+    "feeds.bbci.co.uk": 1,
+    "feeds.a.dj.com": 1,          # Wall Street Journal
+    "feeds.marketwatch.com": 2,
+    "oilprice.com": 2,
+    "stockanalysis.com": 2,
+    "nasdaq.com": 2,
+    "finance.yahoo.com": 2,
+    "www.benzinga.com": 2,
+    "www.coindesk.com": 2,
+    "cointelegraph.com": 2,
+    "seekingalpha.com": 2,
+    "www.investing.com": 2,
+    "feeds.feedburner.com/zerohedge": 3,  # ZeroHedge — often sensationalist
+}
+
+def get_source_tier(feed_url: str) -> int:
+    """Return quality tier (1/2/3) for a feed URL. Default 2."""
+    for domain, tier in SOURCE_QUALITY.items():
+        if domain in feed_url:
+            return tier
+    return 2
+
+
 # --- RSS News Feeds (15 sources) ---
 RSS_FEEDS = [
     # Major financial news
@@ -190,58 +224,7 @@ TRIGGER_KEYWORDS = [
     # Commodities & supply chain
     "wheat", "food crisis", "drought", "supply chain",
     "shipping", "port strike",
-    # Positive company catalysts (buy signals)
-    "patent granted", "patent approved", "new patent",
-    "contract awarded", "contract won", "wins contract",
-    "partnership signed", "signs deal", "new deal",
-    "product launch", "launches new", "unveils",
-    "breakthrough", "record revenue", "record sales",
-    "beats estimates", "raises guidance", "raised outlook",
-    "FDA approved", "FDA clears", "regulatory approval",
-    "phase 3", "clinical success", "trial success",
-    "expansion", "enters new market", "new facility",
-    "Series C", "Series D", "raises funding",
 ]
-
-# --- Buy Signal Catalyst Keywords ---
-# These specifically indicate a POSITIVE company event = potential buy trigger.
-# Any article matching these gets a dedicated BUY SIGNAL analysis.
-BUY_CATALYST_KEYWORDS = [
-    # Patents & IP
-    "patent granted", "patent approved", "new patent", "patent awarded",
-    "intellectual property", "exclusive license",
-    # Government & defense contracts
-    "contract awarded", "contract won", "wins contract", "selected for contract",
-    "DoD contract", "military contract", "government contract", "NASA contract",
-    "awarded $", "contract worth",
-    # FDA & pharma approvals
-    "FDA approved", "FDA approval", "FDA clears", "FDA grants",
-    "breakthrough therapy", "fast track designation",
-    "phase 3 success", "clinical trial success", "trial results positive",
-    "regulatory approval", "drug approved",
-    # Partnerships & deals
-    "strategic partnership", "partnership signed", "signs deal",
-    "joint venture", "licensing agreement", "collaboration agreement",
-    "exclusive agreement", "multi-year deal",
-    # Product & technology launches
-    "product launch", "launches new", "unveils", "introduces",
-    "technology breakthrough", "major announcement", "new invention",
-    "world first", "industry first",
-    # Earnings & financial beats
-    "earnings beat", "beats estimates", "beats expectations",
-    "raises guidance", "raised outlook", "revenue record",
-    "record revenue", "record sales", "record profit",
-    "guidance raised", "above consensus",
-    # Funding & investment
-    "Series C", "Series D", "Series E", "raises $", "raises funding",
-    "secured funding", "investment round",
-    # Expansion
-    "expansion into", "enters new market", "new facility",
-    "acquires", "acquisition of", "buys out",
-]
-
-# Minimum catalyst strength to send a Buy Signal alert (1-10)
-BUY_SIGNAL_THRESHOLD = 7
 
 # --- Bot Behaviour ---
 CHECK_INTERVAL_MINUTES = 30
@@ -253,14 +236,22 @@ MIN_URGENCY = "high"
 # Only send opportunity alerts with HIGH or MEDIUM confidence
 CONFIDENCE_THRESHOLD = 65  # percent
 
-# Claude model
+# Claude model (standard — used for all regular analysis)
 CLAUDE_MODEL = "claude-sonnet-4-6"
+
+# Claude model for deep extended thinking (moonshot analysis)
+# Extended thinking uses more compute but finds better opportunities
+CLAUDE_DEEP_MODEL = "claude-opus-4-6"
 
 # Max tokens per analysis response
 MAX_RESPONSE_TOKENS = 600
 
 # Max tokens for weekly picks (more detail needed)
 MAX_WEEKLY_TOKENS = 1000
+
+# Max tokens for deep moonshot analysis (includes thinking tokens)
+MAX_MOONSHOT_TOKENS = 12000
+MOONSHOT_THINKING_BUDGET = 8000  # tokens Claude uses to "think" before answering
 
 # Number of days back to scan congressional trades
 CONGRESS_LOOKBACK_DAYS = 7
@@ -271,3 +262,24 @@ YOUR_TICKERS = [
     "CLBT", "ODD", "CRWV", "RGTI", "BYDDY", "ONDS",
     "ETH", "SOL", "VUSA", "GOLD",
 ]
+
+# --- Sentiment Monitoring ---
+# Reddit RSS feeds for trending ticker mentions (no API key needed)
+REDDIT_FEEDS = [
+    "https://www.reddit.com/r/wallstreetbets/new.json?limit=25&sort=new",
+    "https://www.reddit.com/r/stocks/new.json?limit=25&sort=new",
+    "https://www.reddit.com/r/investing/new.json?limit=25&sort=new",
+    "https://www.reddit.com/r/smallstreetbets/new.json?limit=25&sort=new",
+    "https://www.reddit.com/r/pennystocks/new.json?limit=25&sort=new",
+    "https://www.reddit.com/r/Superstonk/new.json?limit=25&sort=new",
+]
+
+# StockTwits trending API (free, no auth required)
+STOCKTWITS_TRENDING_URL = "https://api.stocktwits.com/api/2/streams/trending.json"
+
+# Minimum Reddit mentions in 1 hour to trigger a sentiment alert
+REDDIT_MENTION_THRESHOLD = 5
+
+# Batch processing
+BATCH_PENDING_FILE = "data/batch_pending.json"
+BATCH_STATE_FILE = "data/batch_state.json"

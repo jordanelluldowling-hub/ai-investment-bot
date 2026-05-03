@@ -35,6 +35,7 @@ import requests
 import config
 from congress_tracker import (
     get_all_recent_trades,
+    mark_trades_seen,
     format_trade_alert,
     format_daily_summary,
     analyse_trade_with_claude,
@@ -42,6 +43,9 @@ from congress_tracker import (
 )
 from ipo_tracker import check_ipos
 from tracker import record_alert
+from sentiment_tracker import check_sentiment
+from batch_processor import add_to_batch_queue, submit_batch, retrieve_batch_results
+from moonshot_detector import run_moonshot_scan
 
 # --- Logging ---
 logging.basicConfig(
@@ -136,9 +140,13 @@ def fetch_relevant_articles() -> list[dict]:
                 kw.lower() in title.lower() or kw.lower() in summary.lower()
                 for kw in config.TRIGGER_KEYWORDS
             ):
-                relevant.append(
-                    {"title": title, "summary": summary, "link": link, "id": aid}
-                )
+                relevant.append({
+                    "title": title,
+                    "summary": summary,
+                    "link": link,
+                    "id": aid,
+                    "source_tier": config.get_source_tier(feed_url),
+                })
 
     return relevant
 
@@ -605,7 +613,16 @@ def check_news() -> None:
 
     for article in articles:
         title = article["title"]
-        log.info(f"Analysing: {title}")
+        source_tier = article.get("source_tier", 2)
+
+        # Tier 3 sources (e.g. ZeroHedge) — queue for overnight batch processing
+        if source_tier == 3:
+            log.info(f"Tier 3 source — queuing for overnight batch: {title[:60]}")
+            add_to_batch_queue(article)
+            seen.add(article["id"])
+            continue
+
+        log.info(f"Analysing [Tier {source_tier}]: {title}")
 
         try:
             # --- Portfolio Alert ---
@@ -716,56 +733,60 @@ def check_news() -> None:
 def check_congress_trades() -> None:
     """
     Fetch, score, and alert on high-signal congressional stock trades.
-    Runs hourly. Only sends alerts for trades scoring >= CONGRESS_SCORE_THRESHOLD.
+    Runs hourly. Deduplication prevents re-alerting the same trade each run.
+    Looks back 7 days so recently disclosed trades are always caught.
     """
     log.info("Checking congressional trades...")
 
-    trades = get_all_recent_trades(lookback_days=2)  # Last 48h for hourly runs
+    trades = get_all_recent_trades(lookback_days=7, deduplicate=True)
 
     if not trades:
-        log.info("No high-signal congressional trades found.")
+        log.info("No new high-signal congressional trades found.")
         return
 
+    alerted = []
     for trade in trades:
-        # Ask Claude to interpret the trade before sending
-        log.info(f"Analysing trade with Claude: {trade['politician']} {trade['ticker']}")
+        log.info(f"Analysing trade: {trade['politician']} {trade['ticker']}")
         claude_analysis = analyse_trade_with_claude(trade)
         alert = format_trade_alert(trade, claude_analysis)
         send_telegram(alert)
+        alerted.append(trade)
+
         congress_tickers = [trade["ticker"]] if trade.get("ticker") else []
         record_alert(
             alert_type="congress",
             headline=f"{trade['politician']} — {trade.get('trade_type','').upper()} {trade['ticker']}",
-            analysis=claude_analysis,
+            analysis=claude_analysis or format_trade_alert(trade),
             tickers=congress_tickers,
             score=trade.get("score"),
             politician=trade.get("politician"),
         )
         log.info(f"Congress alert sent: {trade['politician']} {trade['ticker']} (score: {trade['score']})")
-        # Check for convergence with recent news/buy signals
         check_and_send_convergence(
             congress_tickers, "congress",
             f"{trade['politician']} traded {trade['ticker']}"
         )
         time.sleep(2)
 
+    # Mark all alerted trades as seen so they don't re-fire next hour
+    mark_trades_seen(alerted)
+
 
 def send_daily_congress_summary() -> None:
     """
-    Daily 6pm summary of the strongest congressional trade signals.
-    Looks back 24 hours and summarises the top 5.
+    Daily 6pm summary of congressional trading activity this week.
+    Looks back 7 days and shows the top signals with Claude pattern analysis.
     """
     log.info("Sending daily congress summary...")
 
-    # Use threshold=5 to get meaningful trades for the summary
-    trades = get_all_recent_trades(lookback_days=1, score_threshold=5)
+    # Show all trades scoring >= 3 for the summary (broader view)
+    trades = get_all_recent_trades(lookback_days=7, score_threshold=3, deduplicate=False)
 
-    # Ask Claude to identify patterns across all today's trades
     claude_pattern = analyse_daily_trades_with_claude(trades) if trades else ""
 
     summary = format_daily_summary(trades, claude_pattern)
     send_telegram(summary)
-    log.info(f"Daily congress summary sent ({len(trades)} trades).")
+    log.info(f"Daily congress summary sent ({len(trades)} trades in last 7 days).")
 
 
 # ============================================================
@@ -841,6 +862,9 @@ No preamble. Be direct and specific.
 def run_test() -> None:
     """Send a test message to confirm Telegram is working."""
     timestamp = datetime.now().strftime("%d %b %Y %H:%M")
+    from batch_processor import get_queue_size
+    batch_queued = get_queue_size()
+
     message = (
         f"Investment Bot v2 — Online\n"
         f"{timestamp}\n\n"
@@ -849,13 +873,17 @@ def run_test() -> None:
         f"• Portfolio: {len(config.YOUR_TICKERS)} holdings\n"
         f"• Politicians watched: {len(config.WATCH_POLITICIANS)} names\n"
         f"• Min urgency: {config.MIN_URGENCY.upper()}\n"
-        f"• Congress score threshold: {config.CONGRESS_SCORE_THRESHOLD}/10\n\n"
+        f"• Congress score threshold: {config.CONGRESS_SCORE_THRESHOLD}/10\n"
+        f"• Batch queue: {batch_queued} articles pending\n\n"
         f"Alert types active:\n"
         f"  PORTFOLIO — impact on your holdings\n"
         f"  OPPORTUNITY — small cap plays\n"
         f"  BUY SIGNAL — company positive catalysts\n"
         f"  CONGRESS — politician stock trades\n"
-        f"  IPO — upcoming IPO alerts\n\n"
+        f"  IPO — upcoming IPO alerts\n"
+        f"  SENTIMENT — Reddit/StockTwits spikes\n"
+        f"  MOONSHOT — extended thinking deep analysis\n"
+        f"  BATCH — overnight Tier 3 source processing\n\n"
         f"All systems operational."
     )
     ok = send_telegram(message)
@@ -873,14 +901,17 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="AI Investment Bot v2")
     parser.add_argument(
         "--mode",
-        choices=["news", "congress", "daily-summary", "weekly", "ipo", "morning", "test"],
+        choices=[
+            "news", "congress", "daily-summary", "weekly", "ipo", "morning",
+            "performance", "sentiment", "batch-submit", "batch-retrieve", "moonshot", "test",
+        ],
         default="news",
         help="Which function to run",
     )
     args = parser.parse_args()
 
     # Validate API key for modes that need Claude
-    needs_claude = args.mode in ["news", "weekly", "ipo"]
+    needs_claude = args.mode in ["news", "weekly", "ipo", "sentiment", "batch-submit", "moonshot"]
     if needs_claude and not config.CLAUDE_API_KEY:
         log.error("CLAUDE_API_KEY is not set. Set it as a GitHub Secret.")
         return
@@ -892,11 +923,22 @@ def main() -> None:
         "weekly": weekly_suggestions,
         "ipo": lambda: check_ipos(send_fn=send_telegram),
         "morning": morning_briefing,
+        "performance": _run_performance,
+        "sentiment": lambda: check_sentiment(send_fn=send_telegram),
+        "batch-submit": lambda: submit_batch(send_fn=send_telegram),
+        "batch-retrieve": lambda: retrieve_batch_results(send_fn=send_telegram),
+        "moonshot": lambda: run_moonshot_scan(send_fn=send_telegram),
         "test": run_test,
     }
 
     log.info(f"Running mode: {args.mode}")
     mode_map[args.mode]()
+
+
+def _run_performance() -> None:
+    """Import and run the weekly performance report."""
+    import performance
+    performance.send_weekly_performance_report()
 
 
 if __name__ == "__main__":
