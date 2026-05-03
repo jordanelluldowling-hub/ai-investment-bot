@@ -2,24 +2,12 @@ name: AI Investment Bot v2
 
 on:
   schedule:
-    # News check — every hour
+    # Single hourly trigger — mode logic handles all routing
+    # 8am → morning briefing | 7am → IPO | 6pm → congress summary
+    # 0am → batch-submit | 2am → batch-retrieve | 0/3/6/9/12/15/21h → sentiment
+    # Sunday 9am → performance | Sunday 6pm → moonshot | Monday 8am → weekly
+    # All other hours → news + congress
     - cron: '0 * * * *'
-    # Morning briefing — every day at 8am UTC
-    - cron: '0 8 * * *'
-    # IPO check — every day at 7am UTC
-    - cron: '0 7 * * *'
-    # Daily congressional summary — every day at 6pm UTC
-    - cron: '0 18 * * *'
-    # Weekly performance report — every Sunday at 9am UTC
-    - cron: '0 9 * * 0'
-    # Sentiment check — every 3 hours
-    - cron: '0 */3 * * *'
-    # Batch submit — midnight UTC (queue all day's Tier 3 articles to Batch API)
-    - cron: '0 0 * * *'
-    # Batch retrieve — 2am UTC (collect overnight results)
-    - cron: '0 2 * * *'
-    # Moonshot scan — Sunday 6pm UTC (after US market close, uses extended thinking)
-    - cron: '0 18 * * 0'
 
   # Allow manual trigger with mode selection
   workflow_dispatch:

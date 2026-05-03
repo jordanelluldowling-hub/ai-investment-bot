@@ -35,6 +35,7 @@ import requests
 import config
 from congress_tracker import (
     get_all_recent_trades,
+    mark_trades_seen,
     format_trade_alert,
     format_daily_summary,
     analyse_trade_with_claude,
@@ -732,56 +733,60 @@ def check_news() -> None:
 def check_congress_trades() -> None:
     """
     Fetch, score, and alert on high-signal congressional stock trades.
-    Runs hourly. Only sends alerts for trades scoring >= CONGRESS_SCORE_THRESHOLD.
+    Runs hourly. Deduplication prevents re-alerting the same trade each run.
+    Looks back 7 days so recently disclosed trades are always caught.
     """
     log.info("Checking congressional trades...")
 
-    trades = get_all_recent_trades(lookback_days=2)  # Last 48h for hourly runs
+    trades = get_all_recent_trades(lookback_days=7, deduplicate=True)
 
     if not trades:
-        log.info("No high-signal congressional trades found.")
+        log.info("No new high-signal congressional trades found.")
         return
 
+    alerted = []
     for trade in trades:
-        # Ask Claude to interpret the trade before sending
-        log.info(f"Analysing trade with Claude: {trade['politician']} {trade['ticker']}")
+        log.info(f"Analysing trade: {trade['politician']} {trade['ticker']}")
         claude_analysis = analyse_trade_with_claude(trade)
         alert = format_trade_alert(trade, claude_analysis)
         send_telegram(alert)
+        alerted.append(trade)
+
         congress_tickers = [trade["ticker"]] if trade.get("ticker") else []
         record_alert(
             alert_type="congress",
             headline=f"{trade['politician']} — {trade.get('trade_type','').upper()} {trade['ticker']}",
-            analysis=claude_analysis,
+            analysis=claude_analysis or format_trade_alert(trade),
             tickers=congress_tickers,
             score=trade.get("score"),
             politician=trade.get("politician"),
         )
         log.info(f"Congress alert sent: {trade['politician']} {trade['ticker']} (score: {trade['score']})")
-        # Check for convergence with recent news/buy signals
         check_and_send_convergence(
             congress_tickers, "congress",
             f"{trade['politician']} traded {trade['ticker']}"
         )
         time.sleep(2)
 
+    # Mark all alerted trades as seen so they don't re-fire next hour
+    mark_trades_seen(alerted)
+
 
 def send_daily_congress_summary() -> None:
     """
-    Daily 6pm summary of the strongest congressional trade signals.
-    Looks back 24 hours and summarises the top 5.
+    Daily 6pm summary of congressional trading activity this week.
+    Looks back 7 days and shows the top signals with Claude pattern analysis.
     """
     log.info("Sending daily congress summary...")
 
-    # Use threshold=5 to get meaningful trades for the summary
-    trades = get_all_recent_trades(lookback_days=1, score_threshold=5)
+    # Show all trades scoring >= 3 for the summary (broader view)
+    trades = get_all_recent_trades(lookback_days=7, score_threshold=3, deduplicate=False)
 
-    # Ask Claude to identify patterns across all today's trades
     claude_pattern = analyse_daily_trades_with_claude(trades) if trades else ""
 
     summary = format_daily_summary(trades, claude_pattern)
     send_telegram(summary)
-    log.info(f"Daily congress summary sent ({len(trades)} trades).")
+    log.info(f"Daily congress summary sent ({len(trades)} trades in last 7 days).")
 
 
 # ============================================================
