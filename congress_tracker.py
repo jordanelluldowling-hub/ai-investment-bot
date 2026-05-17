@@ -35,6 +35,9 @@ log = logging.getLogger(__name__)
 
 SEEN_TRADES_FILE = Path("data/seen_trades.json")
 
+# Populated by get_all_recent_trades() — used by bot.py to show diagnostic stats
+_last_fetch_stats: dict = {}
+
 # --- High-signal politicians (historically well-timed trades) ---
 HIGH_SIGNAL_POLITICIANS = {
     "pelosi", "nancy pelosi", "paul pelosi",
@@ -306,6 +309,8 @@ def get_all_recent_trades(
     Returns:
         List of scored trade dicts, sorted by score descending
     """
+    global _last_fetch_stats
+
     if lookback_days is None:
         lookback_days = config.CONGRESS_LOOKBACK_DAYS
 
@@ -313,19 +318,30 @@ def get_all_recent_trades(
     senate = fetch_senate_trades(lookback_days)
     all_trades = house + senate
 
+    _last_fetch_stats = {
+        "house": len(house),
+        "senate": len(senate),
+        "fetched": len(all_trades),
+        "scored": 0,
+        "new": 0,
+    }
+
     if not all_trades:
         log.warning("No congressional trade data fetched from either API.")
         return []
 
     log.info(f"Total raw trades fetched: {len(all_trades)}")
     scored = filter_and_score_trades(all_trades, score_threshold)
+    _last_fetch_stats["scored"] = len(scored)
 
     if not deduplicate:
+        _last_fetch_stats["new"] = len(scored)
         return scored
 
     # Filter out trades we've already alerted on
     seen = load_seen_trades()
     new_trades = [t for t in scored if _trade_uid(t) not in seen]
+    _last_fetch_stats["new"] = len(new_trades)
 
     log.info(f"After deduplication: {len(new_trades)} new trades (was {len(scored)})")
     return new_trades
@@ -462,17 +478,26 @@ def _trade_context(trade: dict) -> str:
     return f"{politician} traded {ticker}. Monitor for follow-up activity."
 
 
-def format_daily_summary(trades: list[dict], claude_analysis: str = "") -> str:
+def format_daily_summary(trades: list[dict], claude_analysis: str = "", stats: dict = None) -> str:
     """Format a daily/weekly congress summary for Telegram."""
-    if not trades:
-        return (
-            "🏛 CONGRESSIONAL TRADING SUMMARY\n\n"
-            "No new high-signal trades filed in the last 7 days.\n"
-            "Congress may be in recess or no significant disclosures filed."
+    header = "🏛 CONGRESSIONAL TRADING SUMMARY\n"
+
+    if stats:
+        header += (
+            f"📊 {stats.get('house', 0)} House + {stats.get('senate', 0)} Senate fetched"
+            f" | {stats.get('scored', 0)} above score threshold\n"
         )
 
+    if not trades:
+        msg = header + "\nNo high-signal trades in the last 30 days."
+        if stats and stats.get("fetched", 0) == 0:
+            msg += "\n⚠️ API returned no data — possible connectivity issue."
+        elif stats and stats.get("fetched", 0) > 0 and stats.get("scored", 0) == 0:
+            msg += f"\n(All {stats['fetched']} fetched trades were below the score threshold)"
+        return msg
+
     top = trades[:5]
-    lines = ["🏛 CONGRESSIONAL TRADING SUMMARY\n"]
+    lines = [header]
 
     for i, t in enumerate(top, 1):
         direction = "BUY" if "purchase" in t.get("trade_type", "").lower() else "SELL"

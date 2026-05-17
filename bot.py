@@ -418,7 +418,7 @@ DECISION: [SEND / SKIP]""",
             if line.startswith("DECISION:"):
                 decision = line.split(":", 1)[1].strip().upper()
 
-        should_send = decision == "SEND" and score >= 70
+        should_send = decision == "SEND" and score >= config.CONFIDENCE_THRESHOLD
         log.info(f"Opportunity review: score={score}, decision={decision}")
         return should_send, score
 
@@ -738,7 +738,7 @@ def check_congress_trades() -> None:
     """
     log.info("Checking congressional trades...")
 
-    trades = get_all_recent_trades(lookback_days=7, deduplicate=True)
+    trades = get_all_recent_trades(lookback_days=config.CONGRESS_LOOKBACK_DAYS, deduplicate=True)
 
     if not trades:
         log.info("No new high-signal congressional trades found.")
@@ -774,19 +774,21 @@ def check_congress_trades() -> None:
 
 def send_daily_congress_summary() -> None:
     """
-    Daily 6pm summary of congressional trading activity this week.
-    Looks back 7 days and shows the top signals with Claude pattern analysis.
+    Daily 6pm summary of congressional trading activity this month.
+    Looks back 30 days (STOCK Act allows 45-day late filing) and shows top signals.
     """
     log.info("Sending daily congress summary...")
+    from congress_tracker import _last_fetch_stats
 
-    # Show all trades scoring >= 3 for the summary (broader view)
-    trades = get_all_recent_trades(lookback_days=7, score_threshold=3, deduplicate=False)
+    # Broad view for summary — show all trades scoring >= 3
+    trades = get_all_recent_trades(lookback_days=30, score_threshold=3, deduplicate=False)
+    stats = _last_fetch_stats.copy()
 
     claude_pattern = analyse_daily_trades_with_claude(trades) if trades else ""
 
-    summary = format_daily_summary(trades, claude_pattern)
+    summary = format_daily_summary(trades, claude_pattern, stats)
     send_telegram(summary)
-    log.info(f"Daily congress summary sent ({len(trades)} trades in last 7 days).")
+    log.info(f"Daily congress summary sent ({len(trades)} trades | {stats}).")
 
 
 # ============================================================

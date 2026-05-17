@@ -97,8 +97,8 @@ WATCH_POLITICIANS = [
 ]
 
 # --- Congress Trade Score Threshold ---
-# Only alert on trades scoring >= 7 out of 10
-CONGRESS_SCORE_THRESHOLD = 7
+# Alert on trades scoring >= 6 (was 7 — too strict, missed $250K+ purchases)
+CONGRESS_SCORE_THRESHOLD = 6
 
 # --- News Source Quality Tiers ---
 # Tier 1 = most reliable, fact-checked institutional sources
@@ -230,11 +230,30 @@ TRIGGER_KEYWORDS = [
 CHECK_INTERVAL_MINUTES = 30
 MAX_ITEMS_PER_FEED = 10
 
-# Only send portfolio alerts for HIGH urgency events (reduces noise significantly)
-MIN_URGENCY = "high"
+# Send portfolio alerts for MEDIUM+ urgency events (was "high" — too restrictive)
+MIN_URGENCY = "medium"
 
-# Only send opportunity alerts with HIGH or MEDIUM confidence
-CONFIDENCE_THRESHOLD = 65  # percent
+# Send opportunity alerts when quality-gate score >= this (was 65 — too restrictive)
+CONFIDENCE_THRESHOLD = 55  # percent
+
+# Buy catalyst strength score needed to fire a BUY SIGNAL alert (0-10)
+BUY_SIGNAL_THRESHOLD = 6
+
+# Keywords that flag an article as a positive company catalyst (buy signal candidate)
+BUY_CATALYST_KEYWORDS = [
+    "FDA approval", "FDA approved", "FDA breakthrough designation",
+    "government contract", "DoD contract", "Pentagon contract", "awarded contract",
+    "patent granted", "patent approved",
+    "earnings beat", "revenue beat", "beats estimates", "raised guidance",
+    "partnership announced", "strategic partnership", "joint venture",
+    "acquisition announced", "merger agreement",
+    "product launch", "launches product", "new product",
+    "clinical trial success", "Phase 3 success", "Phase 2 success",
+    "funding round", "series A", "series B", "series C", "raised $",
+    "goes public", "IPO priced", "uplisting",
+    "record revenue", "record earnings", "all-time high sales",
+    "breakthrough", "major contract", "landmark deal",
+]
 
 # Claude model (standard — used for all regular analysis)
 CLAUDE_MODEL = "claude-sonnet-4-6"
@@ -253,8 +272,8 @@ MAX_WEEKLY_TOKENS = 1000
 MAX_MOONSHOT_TOKENS = 12000
 MOONSHOT_THINKING_BUDGET = 8000  # tokens Claude uses to "think" before answering
 
-# Number of days back to scan congressional trades
-CONGRESS_LOOKBACK_DAYS = 7
+# Number of days back to scan congressional trades (STOCK Act allows 45-day late filing)
+CONGRESS_LOOKBACK_DAYS = 30
 
 # Portfolio tickers (for matching opportunities to holdings)
 YOUR_TICKERS = [
